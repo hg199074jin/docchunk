@@ -1,10 +1,12 @@
 from pathlib import Path
 
 from docchunk.adapters.base import DocumentAdapter
+from docchunk.adapters.directory import SUPPORTED_SUFFIXES, discover_inputs
 from docchunk.adapters.markdown import MarkdownAdapter
 from docchunk.adapters.mineru import MinerUAdapter
 from docchunk.adapters.pandoc import PandocAdapter
 from docchunk.adapters.text import TextAdapter
+from docchunk.config import AppConfig
 from docchunk.errors import UnsupportedInputError
 
 
@@ -30,3 +32,59 @@ def choose_adapter(
         )
 
     raise UnsupportedInputError(f"Unsupported input type: {suffix or '<none>'}")
+
+
+def analyze_input(path: Path, config: AppConfig) -> dict[str, object]:
+    """只读分析输入，不生成 Corpus。"""
+    path = path.resolve()
+    inputs = discover_inputs(path)
+    if not inputs:
+        raise UnsupportedInputError(f"No supported input files under: {path}")
+
+    total_bytes = sum(item.stat().st_size for item in inputs)
+
+    estimable = [item for item in inputs if item.suffix.casefold() in {".md", ".markdown", ".txt"}]
+    needs_conversion = [item.name for item in inputs if item not in estimable]
+
+    estimated_tokens: int | None = None
+    if estimable and not needs_conversion:
+        from docchunk.tokenizer import TokenCounter
+
+        counter = TokenCounter(config.tokenizer_encoding)
+        estimated_tokens = sum(
+            counter.count(item.read_text(encoding="utf-8", errors="replace"))
+            for item in estimable
+        )
+
+    def _adapter_name(item: Path) -> str:
+        adapter = choose_adapter(
+            item,
+            mineru_command=config.mineru_command,
+            mineru_backend=config.mineru_backend,
+            mineru_effort=config.mineru_effort,
+        )
+        return type(adapter).__name__
+
+    return {
+        "input_type": "directory" if path.is_dir() else "file",
+        "file_count": len(inputs),
+        "total_bytes": total_bytes,
+        "estimated_tokens": estimated_tokens,
+        "token_estimate_note": (
+            "PDF/DOCX 需要转换后才能获得准确 token"
+            if needs_conversion
+            else None
+        ),
+        "files_needing_conversion": needs_conversion,
+        "adapters": sorted({_adapter_name(item) for item in inputs}),
+        "atomic_profile": {
+            "target_tokens": config.atomic_target_tokens,
+            "soft_range": [config.atomic_soft_min_tokens, config.atomic_soft_max_tokens],
+        },
+        "batch_profile": {
+            "target_tokens": config.batch_target_tokens,
+            "soft_range": [config.batch_soft_min_tokens, config.batch_soft_max_tokens],
+            "overlap_atomic_count": config.overlap_atomic_count,
+        },
+        "supported_suffixes": sorted(SUPPORTED_SUFFIXES),
+    }

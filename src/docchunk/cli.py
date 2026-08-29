@@ -6,6 +6,8 @@ from rich.console import Console
 from rich.table import Table
 
 from docchunk.config import AppConfig
+from docchunk.doctor import run_doctor
+from docchunk.inspect_input import analyze_input
 from docchunk.pipeline import (
     batch_corpus,
     corpus_status,
@@ -144,3 +146,33 @@ def rebuild_batches_command(
         overlap_atomic_count=overlap_atomic_count,
     )
     typer.echo(str(result))
+
+
+@app.command()
+def doctor() -> None:
+    """Check the local environment: python, pandoc, mineru, tiktoken, corpus root."""
+    report = run_doctor()
+
+    for check in report.checks:
+        state = "OK  " if check.ok else "FAIL"
+        console.print(f"[green]{state}[/green]" if check.ok else f"[red]{state}[/red]", end=" ")
+        console.print(f"{check.name}: {check.detail}")
+        if not check.ok and check.fix:
+            console.print(f"     fix: {check.fix}")
+
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def inspect(
+    input_path: ExistingPath,
+    corpus_root: Annotated[Path | None, typer.Option("--corpus-root")] = None,
+) -> None:
+    """Read-only analysis of an input file or directory; no corpus is created."""
+    data = analyze_input(input_path, _config_with_root(corpus_root))
+
+    for key, value in data.items():
+        if value is None:
+            continue
+        console.print(f"{key}: {value}")
