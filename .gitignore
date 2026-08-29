@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# 本地真实资料和 Corpus 永远不提交
+LongDocCorpus/
+corpora/
+private-fixtures/
+
+# 原始文档副本（规范副本在 docs/superpowers/ 下）
+doc/
