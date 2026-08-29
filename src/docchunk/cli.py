@@ -5,6 +5,7 @@ import typer
 
 from docchunk.config import AppConfig
 from docchunk.pipeline import batch_corpus, prepare_corpus, split_corpus
+from docchunk.verify import verify_corpus
 
 app = typer.Typer(
     name="docchunk",
@@ -50,7 +51,35 @@ def split(
     corpus_root: Annotated[Path | None, typer.Option("--corpus-root")] = None,
 ) -> None:
     """Prepare, split, and batch a long-document corpus."""
-    typer.echo(str(split_corpus(input_path, _config_with_root(corpus_root))))
+    result = split_corpus(input_path, _config_with_root(corpus_root))
+    report = verify_corpus(result)
+
+    if not report.ok:
+        for error in report.errors:
+            typer.echo(f"ERROR: {error}", err=True)
+        raise typer.Exit(code=1)
+
+    for warning in report.warnings:
+        typer.echo(f"WARNING: {warning}")
+
+    typer.echo(str(result))
+
+
+@app.command()
+def verify(corpus_path: ExistingPath) -> None:
+    """Verify corpus integrity, provenance, and Batch coverage."""
+    report = verify_corpus(corpus_path)
+
+    for warning in report.warnings:
+        typer.echo(f"WARNING: {warning}")
+
+    if report.ok:
+        typer.echo("PASS")
+        return
+
+    for error in report.errors:
+        typer.echo(f"ERROR: {error}", err=True)
+    raise typer.Exit(code=1)
 
 
 @app.command("batch")
