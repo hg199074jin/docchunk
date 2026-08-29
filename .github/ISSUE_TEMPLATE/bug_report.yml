@@ -1,0 +1,103 @@
+name: Bug / document edge case
+description: Report a reproducible parsing, chunking, provenance, verification, or installation problem
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve docchunk. Real long-document edge cases are especially valuable.
+
+        **Do not upload confidential or copyrighted documents you are not allowed to share.** Prefer a minimal synthetic reproduction whenever possible.
+
+  - type: input
+    id: version
+    attributes:
+      label: docchunk version / commit
+      placeholder: "v1.0.3 or commit SHA"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.x"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: input_type
+    attributes:
+      label: Input type
+      options:
+        - PDF
+        - DOCX
+        - Markdown
+        - TXT
+        - Folder / Document Set
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command
+      render: shell
+      placeholder: "uv run docchunk split ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Relevant `docchunk doctor` output
+      render: text
+      description: Remove local paths or information you do not want to share.
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior / error
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Describe the smallest document structure or synthetic content that reproduces the issue.
+      placeholder: |
+        Example:
+        - 2-page PDF
+        - page 1 contains a table whose filename/title includes [brackets]
+        - split succeeds in MinerU but docchunk cannot locate output
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Additional logs / screenshots
+      description: Remove secrets and sensitive document content first.
