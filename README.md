@@ -1,23 +1,81 @@
 # docchunk
 
-Lossless, token-aware long-document preprocessing for reliable LLM reading.
+> **Make long documents reliably readable by AI agents.**  
+> 面向 AI Agent 的无损、可验证、token-aware 长文档预处理层。
 
-`docchunk` 把书籍、课程逐字稿、PDF、Word、Markdown 切成**可验证、可恢复、可追溯**的阅读单元（Atomic Chunk 与 Reading Batch），让任何大模型都能分批高质量地读完一份长资料——而不是"塞进上下文"。
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Local First](https://img.shields.io/badge/processing-local--first-brightgreen.svg)](#隐私与数据边界)
 
-> **Chunking is lossless. Distillation may be lossy.**
-> 切片尽可能无损：Atomic 正文重新拼接后与标准化原文逐字符等价；`docchunk verify` 负责证明这一点。
+`docchunk` 把书籍、课程逐字稿、PDF、Word、Markdown 等长资料转换成 **可验证、可恢复、可追溯** 的阅读 Corpus，让 Codex、Claude Code、各类 Agent 或 LLM 能按受控窗口分批读完整份材料，而不是简单把全文“塞进上下文”。
+
+> **Chunking is lossless. Distillation may be lossy.**  
+> 对标准化后的正文，Atomic Chunk 可以重新拼接并由 `docchunk verify` 逐字符验证完整性。
+
+## 30 秒看懂它解决什么问题
+
+普通 chunker 通常围绕 RAG 检索设计：把文档切成许多小片段，方便 embedding 和召回。  
+`docchunk` 解决的是另一个问题：**如何让一个 Agent 有计划地、完整地读完一本书、一整套课程或一份很长的工作资料，并且能够证明没有漏读、重复或篡改。**
+
+```mermaid
+flowchart LR
+    A[PDF / DOCX / MD / TXT / Course Folder] --> B[docchunk]
+    B --> C[Normalized Source]
+    C --> D[Atomic Chunks\n稳定、无重叠、可复用]
+    D --> E[Reading Batches\n按模型 token 预算组合]
+    E --> F[Codex / Claude Code / Agent / LLM]
+    D --> G[index.jsonl + provenance]
+    G --> H[verify / page trace / recovery]
+```
 
 ## 为什么不是简单按字符切
 
-- 按固定字符数切割会打断句子、表格和标题结构，下游模型丢失论证链条；
-- `docchunk` 沿**自然语言边界**（标题 → 段落 → 句子 → 子句）按 token 预算切分，超长表格跨片时携带表头上下文（明确标记为提示，不污染原文）；
-- 两级结构：**Atomic Chunk**（约 6K tokens，稳定、无重叠、可复用）与 **Reading Batch**（约 24K tokens，按模型预算临时组合，相邻 Batch 复叠 1 个完整 Atomic 作上下文桥）；
-- 换模型只需 `rebuild-batches`，不必重新 OCR/转换/切分；
-- 一切都可验证：`verify` 能发现任何缺口、重复、篡改。
+- **沿自然语言边界切分**：优先标题 → 段落 → 句子 → 子句，而不是固定字符数硬切。
+- **两级结构**：Atomic Chunk 约 6K tokens，稳定、无重叠；Reading Batch 约 24K tokens，按模型预算临时组合。
+- **换模型不重做原文处理**：只需 `rebuild-batches` 调整阅读窗口，Atomic 文件保持不变。
+- **全文覆盖可验证**：`verify` 检查缺口、重复、token 计数、Batch 覆盖、来源引用以及 PDF 页码存在性。
+- **表格上下文保护**：超长表格跨片时携带表头提示，并明确标记为上下文，不污染正文。
+- **来源可追溯**：PDF 经 MinerU 解析时保留 `content_list` 页码来源；每个 Atomic 可回查原 PDF。
+- **整个文件夹就是一个输入**：课程、访谈集、逐字稿目录可作为 Document Set 处理，文件自然排序并保留独立来源身份。
+- **本地优先**：`docchunk` 本身不调用 LLM API，也不会主动上传文档。
+
+## 和普通 Chunker 的区别
+
+| 维度 | 常见 RAG Chunker | `docchunk` |
+| --- | --- | --- |
+| 主要目标 | 检索与召回 | Agent 完整阅读长资料 |
+| 全文覆盖 | 通常不是核心保证 | `verify` 校验完整覆盖 |
+| 原文完整性 | 通常不验证 | 对标准化正文逐字符重建验证 |
+| Chunk 稳定性 | token 预算变化常需重切 | Atomic 稳定，Batch 可重建 |
+| 上下文衔接 | 常用固定 overlap | 复叠完整 Atomic 作为 Context Bridge |
+| 来源追溯 | 取决于实现 | `index.jsonl` + 文档身份 + PDF 页码 |
+| 多文件课程 | 常需先自行拼接 | 原生 Document Set，保留每个文件来源 |
+| Agent 工作流 | 需自行约定 | Reading Batch + `longdoc-router` |
+| 隐私 | 取决于服务 | `docchunk` 本身本地处理、不调用 LLM API |
+
+## 适合什么场景
+
+如果你遇到下面任一情况，`docchunk` 就是为这种工作流准备的：
+
+- 让 Codex / Claude Code / Agent **读完整本书**，再做总结、研究或知识蒸馏；
+- 把几十到几百页 PDF 变成可逐批阅读、可回查页码的 Corpus；
+- 把一整套课程逐字稿作为一个有顺序、有来源身份的输入；
+- 先稳定地做“无损预处理”，再把材料交给 Cangjie / Nuwa / 自定义 Skill；
+- 同一份长资料要适配不同上下文窗口的模型，又不想反复 OCR、转换和切片；
+- 对“Agent 到底有没有读全”有审计式、可验证要求。
+
+## 支持的输入
+
+| 输入 | 默认处理方式 | 说明 |
+| --- | --- | --- |
+| `.txt` / `.md` | 直接标准化 | 无需额外解析器 |
+| `.docx` | Pandoc → GFM Markdown | 可显式配置 MinerU fallback |
+| `.pdf` | MinerU | 保留页码溯源信息 |
+| 文件夹 | Document Set | 自然排序，独立 document_id，不粗暴拼接来源 |
 
 ## 安装
 
-需要 Python 3.12 与 [uv](https://docs.astral.sh/uv/)。
+当前版本从 GitHub 安装。需要 **Python 3.12** 与 [`uv`](https://docs.astral.sh/uv/)。
 
 ```bash
 git clone https://github.com/hg199074jin/docchunk.git
@@ -26,70 +84,61 @@ uv sync
 uv run docchunk doctor
 ```
 
-> 正式发布 PyPI 之前不提供 `pip install docchunk`。
+外部工具按输入类型选择安装：
 
-外部工具：
+- **Pandoc**：处理 DOCX，例如 macOS：`brew install pandoc`
+- **MinerU**：处理 PDF，参见 [MinerU 官方仓库](https://github.com/opendatalab/MinerU)
 
-- **Pandoc**（DOCX 支持）：`brew install pandoc`
-- **MinerU**（PDF 支持）：见 [MinerU 安装文档](https://github.com/opendatalab/MinerU)。`docchunk` 会自动按 `PATH → ~/.venvs/mineru/bin/mineru` 解析可执行文件；也可以在配置中写绝对路径。
+`doctor` 会检查 Python、Pandoc、MinerU、tiktoken 词表和 Corpus 根目录，并显示实际解析到的外部工具路径。
 
-## doctor：先体检
+## 快速上手
 
-```bash
-uv run docchunk doctor
-```
-
-检查 Python 版本、Pandoc、MinerU（显示解析后的路径与版本）、tiktoken 词表加载、Corpus 根目录可写性。全部 OK 时输出 PASS 语义（exit 0）。
-
-## 快速上手：TXT/Markdown
+### 1. 先用 TXT / Markdown 跑通
 
 ```bash
 echo "第一段。第二段。第三段。" > demo.txt
 uv run docchunk split demo.txt
 ```
 
-输出类似：
+命令会返回 Corpus 路径，例如：
 
 ```text
 /Volumes/ORICO/LongDocCorpus/demo-3f786850e387
 ```
 
-然后：
+然后检查状态和完整性：
 
 ```bash
 uv run docchunk status "/实际输出的Corpus路径"
-uv run docchunk verify "/实际输出的Corpus路径"   # PASS
+uv run docchunk verify "/实际输出的Corpus路径"
 ```
 
-## DOCX 示例
+成功时 `verify` 返回 PASS 语义并退出 0。
+
+### 2. 处理 PDF
+
+```bash
+uv run docchunk doctor
+uv run docchunk split "$HOME/Documents/book.pdf"
+```
+
+PDF 默认走 MinerU。本地默认参数为 `-b hybrid-engine --effort medium`；解析后的 Markdown 与 `content_list` 页码来源会进入 Corpus。
+
+### 3. 处理 Word
 
 ```bash
 uv run docchunk split "$HOME/Documents/report.docx"
 ```
 
-默认走 Pandoc 转 GFM Markdown。Pandoc 失败会显式报错；只有显式开启 `docx_fallback_to_mineru` 才会降级，且降级会被记录在 Manifest 中。
+DOCX 默认由 Pandoc 转为 GFM Markdown。只有显式开启 `docx_fallback_to_mineru` 时才会在 Pandoc 失败后降级，并把降级记录写入 Manifest。
 
-## PDF 示例（MinerU）
-
-先确认环境（`docchunk` 会自动解析 MinerU 路径，`doctor` 可查看解析结果）：
-
-```bash
-uv run docchunk doctor
-```
-
-再运行：
-
-```bash
-uv run docchunk split "$HOME/Documents/book.pdf"
-```
-
-PDF 默认走 MinerU（本机默认 `-b hybrid-engine --effort medium`），产出 Markdown 的同时保留 `content_list` 页码溯源——每个 Atomic 都能回查到原 PDF 页码。
-
-## 整个课程文件夹示例
+### 4. 处理整个课程目录
 
 ```bash
 uv run docchunk split "$HOME/Documents/课程"
 ```
+
+例如：
 
 ```text
 课程/
@@ -98,30 +147,53 @@ uv run docchunk split "$HOME/Documents/课程"
 └── 10-第十课.md
 ```
 
-目录按**自然排序**（1、2、10）作为一个 Document Set 处理，每个文件保留独立 `document_id` 与来源身份，绝不粗暴拼接成无来源长文本。
+`docchunk` 会按自然顺序 `1 → 2 → 10` 处理为一个 Document Set，同时保留每个文件自己的 `document_id` 和来源身份。
 
-## 输出目录解释
+## 输出是什么
 
 ```text
 <corpus-root>/<corpus-id>/
-├── manifest.json        # 权威元数据（策略、指纹、验证状态）
-├── index.jsonl          # Atomic 权威索引（token 数/字符区间/标题路径/页码）
+├── manifest.json        # 权威元数据：策略、指纹、验证状态
+├── index.jsonl          # Atomic 索引：token、字符区间、标题路径、页码
 ├── state.json           # 处理状态机
 ├── combined.md          # 派生阅读视图
-├── source/              # normalized 原文 + blocks + source-ref
-├── atomic/Axxxxxx.md    # 最小阅读单元（frontmatter + 原样正文）
-└── batches/Bxxxx.md     # 模型实际阅读的窗口（含 Context Bridge 标记）
+├── source/              # normalized 原文、blocks、source-ref
+├── atomic/Axxxxxx.md    # 稳定的最小阅读单元
+└── batches/Bxxxx.md     # Agent 实际读取的窗口
 ```
 
-## verify：完整性校验
+### Atomic Chunk
+
+Atomic 是稳定的基础层：约 6K tokens、无重叠、可复用。它的目标不是直接适配某个具体模型，而是成为可验证、可长期复用的文档事实层。
+
+### Reading Batch
+
+Batch 是消费层：把多个 Atomic 按模型 token 预算组合成阅读窗口。相邻 Batch 可复叠一个完整 Atomic 作为 Context Bridge，并在 frontmatter 中区分：
+
+- `overlap_atomic_ids`：只用于上下文衔接；
+- `new_atomic_ids`：本 Batch 首次出现的新材料。
+
+因此可以验证“新材料恰好覆盖全部 Atomic 一次”。
+
+## `verify`：证明没有漏
 
 ```bash
 uv run docchunk verify <corpus-path>
 ```
 
-按文档重建原文逐字符比对、核对 token 数、检查 Atomic 无缺口/无重复、Batch 新材料恰好覆盖全部 Atomic 一次、overlap 策略正确、PDF 页码存在性。`docchunk split` 完成后会自动 verify，失败 exit 1。
+校验包括：
 
-## rebuild-batches：换模型不改原文
+1. 按文档重建标准化正文并逐字符比对；
+2. Atomic 字符区间无缺口、无重复；
+3. token 数与索引一致；
+4. Batch 的新材料完整覆盖所有 Atomic；
+5. overlap 策略符合配置；
+6. source hash / source-ref 与 Manifest 一致；
+7. PDF 场景检查页码来源存在性。
+
+`docchunk split` 完成后会自动运行 verify；失败时退出 1。
+
+## 换模型：只重建 Batch
 
 ```bash
 uv run docchunk rebuild-batches <corpus-path> \
@@ -131,54 +203,87 @@ uv run docchunk rebuild-batches <corpus-path> \
   --overlap-atomic-count 1
 ```
 
-只重建阅读窗口，Atomic 文件哈希完全不变——这就是两级架构的收益。
+这一步只改变模型阅读窗口，不重新 OCR、不重新标准化、不重新切 Atomic。Atomic 文件哈希保持不变。
 
-## 怎么交给 Codex / Agent
+## 怎么交给 Codex / Claude Code / Agent
+
+最简单的方式，是把下面这段直接交给你的 Agent：
 
 ```text
-请阅读这个 Corpus 的 batches 目录（按 B0001 顺序）：
+请按 B0001、B0002……的顺序阅读这个 Corpus 的 batches 目录：
 <corpus-path>/batches/
-每个文件的 frontmatter 区分了 overlap_atomic_ids（上下文）与 new_atomic_ids（新材料）；
-来源回查用 index.jsonl。
+
+每个 Batch 的 frontmatter 中：
+- overlap_atomic_ids 是上下文桥，不算新材料；
+- new_atomic_ids 是本批首次阅读的新材料。
+
+需要核查原始来源时读取 index.jsonl。
+请在完成全部 Batch 后再给出跨文档总结。
 ```
 
-## 怎么交给 Cangjie / Nuwa
+## 和 Cangjie / Nuwa 等 Skill 串联
 
-安装 `skills/longdoc-router/SKILL.md` 为 Agent Skill 后，对 Agent 说：
+仓库包含 `skills/longdoc-router/SKILL.md`。安装为 Agent Skill 后，可以让它负责：
+
+```text
+校验 Corpus → 按 Batch 调度 → 维护断点 → 调用下游 Skill
+```
+
+例如：
 
 ```text
 请用 longdoc-router 处理这个 Corpus：<corpus-path>
 这是课程逐字稿，目标是调用 cangjie-skill 蒸馏。
-完成后交给 personal-capability-distiller 做个人能力沉淀。
+完成后再交给我的个人知识沉淀 Skill。
 ```
 
-Router 会校验 Corpus → 按 Batch 调度 → 维护断点 → 交给下游 Skill，且不修改任何第三方 Skill。
+Router 不修改第三方 Skill，只在上游负责长文档读取编排。
 
-## 常见错误
+## 常见问题
 
-| 症状 | 原因 | 怎么办 |
-|---|---|---|
-| `Pandoc executable was not found` | 没装或 PATH 不对 | `brew install pandoc` |
-| `MinerU executable was not found` | MinerU 不在 PATH 且 venv 回退也失败 | `uv run docchunk doctor`；或在配置中写可执行文件绝对路径 |
-| verify missing atomic | Corpus 被人为移动/删除 | 保留原 Corpus，重新 `split --force` 或修复损坏文件 |
-| forced split 很多 | OCR 无标点/超大表格 | 检查 MinerU 输出质量（`docchunk inspect` 也会给 warning） |
-| 第二次 split 没重新 OCR | 正常幂等复用 | source hash 未变化；确要重跑加 `--force` |
-| 改 24K 为 32K | 不需要重新切 Atomic | `rebuild-batches` |
+| 症状 | 常见原因 | 处理方式 |
+| --- | --- | --- |
+| `Pandoc executable was not found` | Pandoc 未安装或 PATH 不对 | `brew install pandoc` 后重新 `doctor` |
+| `MinerU executable was not found` | MinerU 不在 PATH 且 venv 回退失败 | `uv run docchunk doctor`；或配置绝对路径 |
+| `verify` 报 missing atomic | Corpus 被移动、删除或人为修改 | 保留原 Corpus，修复后 verify；必要时重新 `split --force` |
+| forced split 很多 | OCR 无标点、超大表格等 | 检查 MinerU 输出；结合 `docchunk inspect` warning |
+| 第二次 split 没重新 OCR | source hash 未变化，幂等复用 | 如确需重跑，使用 `--force` |
+| 24K 想改 32K | 只是模型预算变化 | 运行 `rebuild-batches`，无需重新切 Atomic |
 
-## 升级与卸载
+## 隐私与数据边界
 
-```bash
-cd docchunk && git pull && uv sync     # 升级
-rm -rf docchunk                        # 卸载代码
-rm -rf <你的 corpus-root>              # 删除生成的 Corpus（默认 /Volumes/ORICO/LongDocCorpus）
-```
+- `docchunk` **本身不调用任何 LLM API**；
+- 原始文件不会被修改；
+- 所有产物写入本地 Corpus 目录；
+- Pandoc、tiktoken 和本地 MinerU 均在本机工作；
+- 如果你的 MinerU 自己配置了云端后端，那属于 MinerU 环境配置，`docchunk` 不会替你启用。
 
-## 隐私说明
+## 项目状态
 
-- `docchunk` 本身**不调用任何 LLM API**，不上传用户资料；
-- 全部处理在本地完成（MinerU/Pandoc/tiktoken 词表均为本地推理或静态资源）；
-- 若你的 MinerU 配置了云端后端，那是 MinerU 环境自身的配置，`docchunk doctor` 会显示但不会替你启用；
-- 原始文件永不修改，所有产物写入 Corpus 目录。
+当前版本：**v1.0.3**。
+
+下一阶段重点不是堆更多“智能”，而是继续提高可安装性、可观测性和生态集成：
+
+- [ ] 发布 PyPI / 简化一键安装
+- [ ] 增加可复制的公开 Demo Corpus
+- [ ] 增加更多真实长文档基准与回归样例
+- [ ] 补充 Codex / Claude Code / Agent 集成示例
+- [ ] 收集更多不同 PDF、课程和表格场景的 Issue
+
+## 参与项目
+
+如果你正在做长文档 Agent、知识蒸馏、课程处理、RAG 前处理或 PDF 工作流，欢迎：
+
+- ⭐ Star：如果这个方向对你有用；
+- 🐛 Issue：尤其欢迎真实长文档失败样例和边界情况；
+- 🔧 PR：修复解析、验证、兼容性或文档问题；
+- 🔌 Integration：把 `docchunk` 接入你的 Agent / Skill / Workflow。
+
+详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 发布与传播资料
+
+如果你想介绍、评测或集成 `docchunk`，仓库里准备了 [Launch Kit](docs/launch-kit.md)，包含项目定位、Demo 脚本、社区发布文案和集成说明。
 
 ## 设计文档
 
