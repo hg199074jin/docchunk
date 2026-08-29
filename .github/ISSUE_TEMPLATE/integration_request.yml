@@ -1,0 +1,50 @@
+name: Integration request
+description: Propose an integration with an Agent, Skill, document tool, or downstream workflow
+title: "[Integration] "
+labels:
+  - enhancement
+body:
+  - type: input
+    id: project
+    attributes:
+      label: Project / tool
+      placeholder: "Project name and public URL"
+    validations:
+      required: true
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Desired workflow
+      placeholder: |
+        Example:
+        PDF / course folder → docchunk Corpus → downstream Skill → structured knowledge output
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Proposed responsibility boundary
+      description: What should docchunk own, and what should the downstream tool own?
+      placeholder: |
+        docchunk: exhaustive reading preparation, verification, provenance
+        downstream tool: summarization / distillation / extraction
+    validations:
+      required: true
+
+  - type: textarea
+    id: value
+    attributes:
+      label: Why this integration is useful
+      description: Describe the concrete user problem rather than only naming the tool.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: coupling
+    attributes:
+      label: Integration principle
+      options:
+        - label: I am comfortable with a loosely coupled integration that consumes the docchunk Corpus contract instead of adding vendor-specific logic to core docchunk.
+          required: true
