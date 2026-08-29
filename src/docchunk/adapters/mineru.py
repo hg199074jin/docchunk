@@ -49,9 +49,22 @@ class MinerUAdapter(DocumentAdapter):
     def prepare(self, path: Path) -> NormalizedDocument:
         output_root = self._run_mineru(path)
         try:
-            markdown_files = sorted(output_root.rglob(f"{path.stem}.md"))
-            # 兼容 v1/v2 命名：*_content_list.json / *_content_list_v2.json
-            content_files = sorted(output_root.rglob(f"{path.stem}_content_list*.json"))
+            # 按字面文件名匹配而不是 glob pattern：文件名里的 [ ] ? *
+            # 在 rglob pattern 中是元字符，会导致输出永远找不到
+            # （v1.0.2 回归：《一本小小的蓝色逻辑书 (...) [译]》.pdf）。
+            markdown_files: list[Path] = []
+            content_files: list[Path] = []
+            for item in output_root.rglob("*"):
+                if not item.is_file():
+                    continue
+                if item.name == f"{path.stem}.md":
+                    markdown_files.append(item)
+                elif item.name.startswith(f"{path.stem}_content_list") and item.suffix == ".json":
+                    # 兼容 v1/v2 命名：*_content_list.json / *_content_list_v2.json
+                    content_files.append(item)
+
+            markdown_files.sort()
+            content_files.sort()
 
             if not markdown_files:
                 raise ExternalToolError("MinerU completed but no Markdown output was found")

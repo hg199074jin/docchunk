@@ -68,3 +68,28 @@ def test_mineru_adapter_uses_generated_markdown_and_content_list(tmp_path) -> No
     assert doc.blocks[0].char_start == doc.text.index("标题")
     assert doc.metadata["adapter"] == "mineru"
     assert doc.metadata["unaligned_blocks"] == 0
+
+
+def test_mineru_adapter_handles_glob_metacharacters_in_filename(tmp_path) -> None:
+    """文件名含 [ ] ( ) 等 glob 元字符时，输出发现必须按字面名匹配（v1.0.2 回归）。"""
+    pdf = tmp_path / "书 [第2版] (扫描) 注?释.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    stem = pdf.stem
+
+    output = tmp_path / "mineru-output"
+    nested = output / stem / "auto"
+    nested.mkdir(parents=True)
+    (nested / f"{stem}.md").write_text("# 标题\n\n正文。\n", encoding="utf-8")
+    (nested / f"{stem}_content_list.json").write_text(
+        '[{"type":"text","text":"标题","text_level":1,"page_idx":0},'
+        '{"type":"text","text":"正文。","page_idx":0}]',
+        encoding="utf-8",
+    )
+
+    with patch.object(MinerUAdapter, "_run_mineru", return_value=output):
+        doc = MinerUAdapter().prepare(pdf)
+
+    assert doc.text.startswith("# 标题")
+    assert doc.blocks[0].page_idx == 0
+    assert doc.blocks[0].char_start == doc.text.index("标题")
+    assert doc.metadata["unaligned_blocks"] == 0

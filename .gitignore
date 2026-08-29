@@ -21,3 +21,6 @@ private-fixtures/
 
 # 原始文档副本（规范副本在 docs/superpowers/ 下）
 doc/
+
+# 本地测试用大 PDF 永不提交（GitHub 100MB 限制）
+tests/*.pdf
