@@ -11,6 +11,7 @@ from docchunk.config import AppConfig
 from docchunk.errors import ExternalToolError
 from docchunk.fingerprints import sha256_file, sha256_text, stable_fingerprint
 from docchunk.inspect_input import choose_adapter
+from docchunk.logging_utils import EventLogger
 from docchunk.models.index import AtomicFlags, AtomicIndexRecord, SourceLocation
 from docchunk.models.manifest import (
     AtomicPolicy,
@@ -219,6 +220,7 @@ def _prepare_documents(
     inputs: list[Path],
     config: AppConfig,
     counter: TokenCounter,
+    logger: EventLogger,
 ) -> tuple[list[dict[str, object]], int]:
     documents: list[dict[str, object]] = []
     normalized_tokens = 0
@@ -237,6 +239,16 @@ def _prepare_documents(
         source_ref["document_id"] = document_id
         documents.append(source_ref)
         normalized_tokens += counter.count(document.text)
+        logger.log(
+            "prepare",
+            "completed",
+            f"normalized {source.name}",
+            document_id=document_id,
+            extra={
+                "adapter": document.metadata.get("adapter", "direct"),
+                "source_sha256": source_hash,
+            },
+        )
 
     return documents, normalized_tokens
 
@@ -256,6 +268,7 @@ def prepare_corpus(
     title = input_path.stem if input_path.is_file() else input_path.name
     corpus_id = make_corpus_id(title, source_fingerprint)
     paths = create_corpus_layout(config.corpus_root, corpus_id)
+    logger = EventLogger(paths.logs_dir / "processing.jsonl", echo=config.verbose)
 
     atomic_policy, batch_policy = _policies_from_config(config)
     normalization_fp = _normalization_fingerprint(config)
@@ -275,9 +288,15 @@ def prepare_corpus(
             existing.atomic_policy = atomic_policy
             existing.batch_policy = batch_policy
             write_manifest(paths, existing)
+            logger.log(
+                "prepare",
+                "reused",
+                "source fingerprint matched; normalized documents reused",
+            )
             return paths.root
 
     _set_stage(paths.root, ProcessingStage.PREPARING)
+    logger.log("prepare", "started", f"preparing {len(inputs)} input file(s)")
 
     try:
         documents, normalized_tokens = _prepare_documents(
@@ -285,8 +304,10 @@ def prepare_corpus(
             inputs=inputs,
             config=config,
             counter=counter,
+            logger=logger,
         )
     except Exception as exc:
+        logger.tool_error("prepare", exc)
         _set_stage(
             paths.root,
             ProcessingStage.FAILED,
@@ -327,6 +348,12 @@ def prepare_corpus(
     )
     write_manifest(paths, manifest)
     _set_stage(paths.root, ProcessingStage.PREPARED)
+    logger.log(
+        "prepare",
+        "completed",
+        f"corpus {corpus_id} prepared",
+        extra={"documents": len(documents)},
+    )
     return paths.root
 
 
@@ -395,12 +422,18 @@ def split_prepared_corpus(
 
     expected_atomic_fp = _atomic_policy_fingerprint(manifest)
     atomic_files = list((corpus_path / "atomic").glob("A*.md"))
+    logger = EventLogger(corpus_path / "logs" / "processing.jsonl", echo=config.verbose)
     if (
         not force
         and manifest.fingerprints.atomic_policy == expected_atomic_fp
         and (corpus_path / "index.jsonl").exists()
         and atomic_files
     ):
+        logger.log(
+            "split",
+            "reused",
+            "atomic policy fingerprint matched; keeping existing Atomic chunks",
+        )
         return corpus_path
 
     manifest.verification.status = "pending"
@@ -411,6 +444,7 @@ def split_prepared_corpus(
         manifest,
     )
     _set_stage(corpus_path, ProcessingStage.SPLITTING)
+    logger.log("split", "started", "splitting prepared documents into Atomic chunks")
 
     try:
         counter = TokenCounter(manifest.tokenizer.encoding)
@@ -478,6 +512,7 @@ def split_prepared_corpus(
         manifest.fingerprints.atomic_policy = expected_atomic_fp
         write_manifest(paths, manifest)
     except Exception as exc:
+        logger.tool_error("split", exc)
         _set_stage(
             corpus_path,
             ProcessingStage.FAILED,
@@ -486,6 +521,12 @@ def split_prepared_corpus(
         raise
 
     _set_stage(corpus_path, ProcessingStage.SPLIT)
+    logger.log(
+        "split",
+        "completed",
+        f"{global_sequence} atomic chunks written",
+        extra={"atomic_chunks": global_sequence},
+    )
     return corpus_path
 
 
@@ -509,11 +550,17 @@ def batch_corpus(
 
     expected_batch_fp = _batch_policy_fingerprint(manifest)
     batch_files = list((corpus_path / "batches").glob("B*.md"))
+    logger = EventLogger(corpus_path / "logs" / "processing.jsonl", echo=config.verbose)
     if (
         not force
         and manifest.fingerprints.batch_policy == expected_batch_fp
         and batch_files
     ):
+        logger.log(
+            "batch",
+            "reused",
+            "batch policy fingerprint matched; keeping existing Batches",
+        )
         return corpus_path
 
     manifest.verification.status = "pending"
@@ -524,6 +571,7 @@ def batch_corpus(
         manifest,
     )
     _set_stage(corpus_path, ProcessingStage.BATCHING)
+    logger.log("batch", "started", "building reading batches")
 
     try:
         records = _load_atomic_records(corpus_path)
@@ -566,6 +614,7 @@ def batch_corpus(
             manifest,
         )
     except Exception as exc:
+        logger.tool_error("batch", exc)
         _set_stage(
             corpus_path,
             ProcessingStage.FAILED,
@@ -574,6 +623,12 @@ def batch_corpus(
         raise
 
     _set_stage(corpus_path, ProcessingStage.BATCHED)
+    logger.log(
+        "batch",
+        "completed",
+        f"{len(batches)} reading batches written",
+        extra={"reading_batches": len(batches)},
+    )
     return corpus_path
 
 

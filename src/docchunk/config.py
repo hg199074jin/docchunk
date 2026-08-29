@@ -36,3 +36,4 @@ class AppConfig(BaseModel):
     mineru_backend: str = "hybrid-engine"
     mineru_effort: str = "medium"
     docx_fallback_to_mineru: bool = False
+    verbose: bool = False

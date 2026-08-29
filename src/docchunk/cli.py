@@ -45,10 +45,15 @@ def version() -> None:
     typer.echo(__version__)
 
 
-def _config_with_root(corpus_root: Path | None) -> AppConfig:
+def _config_with_root(corpus_root: Path | None, verbose: bool = False) -> AppConfig:
     config = AppConfig()
+    update: dict[str, object] = {}
     if corpus_root is not None:
-        config = config.model_copy(update={"corpus_root": corpus_root})
+        update["corpus_root"] = corpus_root
+    if verbose:
+        update["verbose"] = True
+    if update:
+        config = config.model_copy(update=update)
     return config
 
 
@@ -57,9 +62,21 @@ def prepare(
     input_path: ExistingPath,
     corpus_root: Annotated[Path | None, typer.Option("--corpus-root")] = None,
     force: ForceOption = False,
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", help="Echo adapter/tool-level progress events to the console."),
+    ] = False,
 ) -> None:
     """Normalize input files without creating Atomic chunks."""
-    typer.echo(str(prepare_corpus(input_path, _config_with_root(corpus_root), force=force)))
+    typer.echo(
+        str(
+            prepare_corpus(
+                input_path,
+                _config_with_root(corpus_root, verbose),
+                force=force,
+            )
+        )
+    )
 
 
 @app.command()
@@ -67,11 +84,15 @@ def split(
     input_path: ExistingPath,
     corpus_root: Annotated[Path | None, typer.Option("--corpus-root")] = None,
     force: ForceOption = False,
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", help="Echo adapter/tool-level progress events to the console."),
+    ] = False,
 ) -> None:
     """Prepare, split, and batch a long-document corpus."""
     result = split_corpus(
         input_path,
-        _config_with_root(corpus_root),
+        _config_with_root(corpus_root, verbose),
         force=force,
     )
     report = verify_corpus(result)

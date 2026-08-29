@@ -1,7 +1,9 @@
 import json
+import unittest.mock
 from pathlib import Path
 
 from docchunk.config import AppConfig
+from docchunk.errors import ExternalToolError
 from docchunk.pipeline import prepare_corpus, split_corpus
 
 
@@ -71,3 +73,42 @@ def test_prepare_only_normalizes_sources(tmp_path: Path) -> None:
     assert (corpus / "source" / "normalized.md").exists()
     assert not list((corpus / "atomic").glob("A*.md"))
     assert not list((corpus / "batches").glob("B*.md"))
+
+
+def test_split_writes_structured_processing_log(tmp_path: Path) -> None:
+    source = tmp_path / "course.md"
+    source.write_text("# 标题\n\n" + "完整内容句子。" * 500, encoding="utf-8")
+
+    corpus = split_corpus(source, small_config(tmp_path / "corpora"))
+    log_path = corpus / "logs" / "processing.jsonl"
+    assert log_path.exists()
+
+    events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert {"prepare", "split", "batch"} <= {event["stage"] for event in events}
+    assert all(event["status"] != "failed" for event in events)
+    # 设计 §23：禁止把全文写进日志
+    assert "完整内容句子。" not in log_path.read_text(encoding="utf-8")
+
+
+def test_prepare_failure_persists_tool_error(tmp_path: Path) -> None:
+    source = tmp_path / "course.md"
+    source.write_text("# 标题\n\n正文。", encoding="utf-8")
+    config = small_config(tmp_path / "corpora")
+
+    with unittest.mock.patch(
+        "docchunk.pipeline.choose_adapter",
+        side_effect=ExternalToolError("MinerU failed: boom-stderr-12345"),
+    ):
+        try:
+            prepare_corpus(source, config)
+        except ExternalToolError:
+            pass
+
+    corpus_dirs = list((tmp_path / "corpora").glob("*"))
+    assert len(corpus_dirs) == 1
+    log_text = (corpus_dirs[0] / "logs" / "processing.jsonl").read_text(encoding="utf-8")
+    assert "boom-stderr-12345" in log_text
