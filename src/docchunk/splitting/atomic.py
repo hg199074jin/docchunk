@@ -3,6 +3,7 @@ from semantic_text_splitter import MarkdownSplitter, TextSplitter
 
 from docchunk.models.manifest import AtomicPolicy
 from docchunk.splitting.boundaries import extract_heading_marks, heading_path_at
+from docchunk.splitting.structured_blocks import find_markdown_tables, table_context_for_span
 from docchunk.tokenizer import TokenCounter
 
 
@@ -53,10 +54,16 @@ def split_atomic(
 
     raw_chunks = splitter.chunk_indices(text)
     marks = extract_heading_marks(text) if markdown else []
+    tables = find_markdown_tables(text) if markdown else []
 
     chunks: list[AtomicChunk] = []
     for sequence, (char_start, chunk_text) in enumerate(raw_chunks, start=1):
         char_end = char_start + len(chunk_text)
+        split_table, table_header_context = table_context_for_span(
+            tables,
+            char_start,
+            char_end,
+        )
         chunks.append(
             AtomicChunk(
                 sequence=sequence,
@@ -66,6 +73,8 @@ def split_atomic(
                 char_end=char_end,
                 heading_path=heading_path_at(marks, char_start),
                 forced_split=_looks_like_forced_boundary(text, char_end),
+                split_table=split_table,
+                table_header_context=table_header_context,
             )
         )
 
