@@ -1,3 +1,8 @@
+---
+name: longdoc-router
+description: Orchestrate long-document reading with docchunk. Use when the user asks to "分批深读这本书/这份 PDF" / "这本书太长了帮我切分" / "把这个课程逐字稿/长文档切成可读的小段" / "用 docchunk 处理" / "蒸馏这本书/这门课"（长文档蒸馏的上游预处理）or wants a long PDF/DOCX/Markdown/TXT (roughly >2万字) split into verifiable, resumable reading batches, optionally routed to cangjie-skill / nuwa-skill for distillation. NOT for short documents that fit in one read, and NOT for distillation itself (that is cangjie-skill / nuwa-skill's job).
+---
+
 # longdoc-router
 
 长文档阅读编排 Skill：识别长文档任务 → 调用 `docchunk` 生成可验证 Corpus → 按 Batch 顺序供下游蒸馏 Skill 阅读 → 按需交给 `personal-capability-distiller`。
