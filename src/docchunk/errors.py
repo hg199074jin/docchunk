@@ -12,3 +12,7 @@ class VerificationError(DocchunkError):
 
 class UnsupportedInputError(DocchunkError):
     """Raised when no adapter supports an input."""
+
+
+class RebuildError(DocchunkError):
+    """Raised when rebuild-batches fails verification."""

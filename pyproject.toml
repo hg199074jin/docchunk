@@ -1,6 +1,6 @@
 [project]
 name = "docchunk"
-version = "1.0.1"
+version = "1.0.2"
 description = "Lossless, token-aware long-document preprocessing for LLM reading workflows"
 requires-python = ">=3.12,<3.13"
 dependencies = [

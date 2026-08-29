@@ -3,7 +3,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from docchunk.fingerprints import sha256_text
+from docchunk.fingerprints import sha256_file, sha256_text
 from docchunk.models.index import AtomicIndexRecord
 from docchunk.models.manifest import Manifest, utc_now_iso
 from docchunk.storage import read_atomic_body
@@ -198,6 +198,54 @@ def verify_corpus(
                 errors.append(
                     f"Normalized source hash mismatch for {document_id}"
                 )
+
+        expected_source_sha = entry.get("source_sha256")
+        source_path_str = entry.get("source_path")
+        if isinstance(expected_source_sha, str) and isinstance(source_path_str, str):
+            original_path = Path(source_path_str)
+            if original_path.exists():
+                actual_source_sha = sha256_file(original_path)
+                if actual_source_sha != expected_source_sha:
+                    errors.append(
+                        f"Source hash changed for {document_id}: "
+                        f"recorded {expected_source_sha[:12]}... but current "
+                        f"file is {actual_source_sha[:12]}..."
+                    )
+            else:
+                errors.append(
+                    f"Original source file is missing for {document_id}: "
+                    f"{original_path}"
+                )
+
+        source_ref_path = corpus_path / "source" / "documents" / document_id / "source-ref.json"
+        if source_ref_path.exists():
+            try:
+                import json
+
+                ref_data = json.loads(source_ref_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                errors.append(f"Invalid source-ref.json for {document_id}: {exc}")
+            else:
+                for field in (
+                    "source_sha256",
+                    "normalized_sha256",
+                    "adapter",
+                    "normalized_path",
+                ):
+                    recorded = ref_data.get(field)
+                    if recorded is None:
+                        errors.append(
+                            f"source-ref.json for {document_id} is missing field: {field}"
+                        )
+                        continue
+                    expected = entry.get(field)
+                    if expected is not None and recorded != expected:
+                        errors.append(
+                            f"source-ref.json for {document_id} mismatch on "
+                            f"{field}: recorded={recorded!r} expected={expected!r}"
+                        )
+        else:
+            errors.append(f"Missing source-ref.json for {document_id}")
 
     batch_files = sorted((corpus_path / "batches").glob("B*.md"))
     all_new_ids: list[str] = []

@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from docchunk.config import AppConfig
 from docchunk.models.state import ProcessingStage
 from docchunk.pipeline import load_state, rebuild_batches, split_corpus
@@ -94,3 +96,56 @@ def test_failed_pipeline_records_failed_state(tmp_path: Path) -> None:
     state = load_state(corpus_dirs[0])
     assert state.stage is ProcessingStage.FAILED
     assert "boom" in (state.error or "")
+
+
+def test_split_failure_does_not_destroy_existing_atomic(tmp_path: Path) -> None:
+    source = tmp_path / "a.md"
+    source.write_text("正文。" * 400, encoding="utf-8")
+    config = reuse_config(tmp_path / "corpora")
+
+    first_corpus = split_corpus(source, config)
+    original_hash = (first_corpus / "atomic" / "A000001.md").read_bytes()
+
+    # 用 staging 重写路径时（force=True），split_atomic 抛错；
+    # C2 要求旧 atomic 与 manifest 都不能被破坏。
+    with patch(
+        "docchunk.pipeline.split_atomic",
+        side_effect=RuntimeError("corrupt splitter"),
+    ):
+        from docchunk.pipeline import split_prepared_corpus
+
+        try:
+            split_prepared_corpus(first_corpus, config, force=True)
+        except RuntimeError:
+            pass
+
+    assert (first_corpus / "atomic" / "A000001.md").read_bytes() == original_hash
+    # staging 残留必须清理
+    staging = first_corpus.parent / f".{first_corpus.name}.staging"
+    assert not staging.exists()
+
+
+def test_rebuild_batches_raises_rebuild_error_on_verify_fail(tmp_path: Path) -> None:
+    source = tmp_path / "a.md"
+    source.write_text("内容。" * 800, encoding="utf-8")
+    config = reuse_config(tmp_path / "corpora")
+    corpus = split_corpus(source, config)
+
+    from docchunk.errors import RebuildError
+
+    with patch("docchunk.verify.verify_corpus") as fake_verify:
+        from docchunk.verify import VerificationReport
+
+        fake_verify.return_value = VerificationReport(
+            ok=False,
+            errors=["forced mismatch"],
+        )
+
+        with pytest.raises(RebuildError, match="Rebuilt batches failed verification"):
+            rebuild_batches(
+                corpus_path=corpus,
+                target_tokens=200,
+                soft_min_tokens=120,
+                soft_max_tokens=240,
+                overlap_atomic_count=1,
+            )

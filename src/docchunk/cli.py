@@ -7,6 +7,13 @@ from rich.table import Table
 
 from docchunk.config import AppConfig
 from docchunk.doctor import run_doctor
+from docchunk.errors import (
+    DocchunkError,
+    ExternalToolError,
+    RebuildError,
+    UnsupportedInputError,
+    VerificationError,
+)
 from docchunk.inspect_input import analyze_input
 from docchunk.pipeline import (
     batch_corpus,
@@ -24,6 +31,41 @@ app = typer.Typer(
 )
 
 console = Console()
+
+
+def _emit_docchunk_error(err: DocchunkError, corpus_path: Path | None) -> None:
+    """设计 §15.6：what / why / next / log_path 四要素。"""
+    console.print(f"[bold red]发生了什么：[/bold red] {type(err).__name__}: {err}")
+
+    if isinstance(err, ExternalToolError):
+        console.print("[bold yellow]最可能原因：[/bold yellow] 系统里 MinerU / Pandoc 不可用或调用失败。")
+        console.print(
+            "[bold yellow]下一步命令：[/bold yellow]\n"
+            "  1. 运行 `uv run docchunk doctor` 检查环境\n"
+            "  2. 在配置中显式设置 mineru_command 为 MinerU 可执行文件绝对路径"
+        )
+    elif isinstance(err, VerificationError):
+        console.print("[bold yellow]最可能原因：[/bold yellow] Corpus 被人为改动或原始资料变化。")
+        console.print(
+            "[bold yellow]下一步命令：[/bold yellow]\n"
+            "  1. 运行 `uv run docchunk verify <corpus>` 查看具体错误\n"
+            "  2. 必要时 `uv run docchunk split <输入> --force` 重建"
+        )
+    elif isinstance(err, UnsupportedInputError):
+        console.print(
+            "[bold yellow]下一步命令：[/bold yellow] "
+            "确认输入是 .pdf/.docx/.md/.markdown/.txt 之一，或传入包含这些文件的目录。"
+        )
+    elif isinstance(err, RebuildError):
+        console.print("[bold yellow]最可能原因：[/bold yellow] 重建 Batch 后 verify 失败。")
+        console.print(
+            "[bold yellow]下一步命令：[/bold yellow] 重新跑一次 `docchunk split --force`。"
+        )
+
+    if corpus_path is not None:
+        log_path = corpus_path / "logs" / "processing.jsonl"
+        console.print(f"[bold yellow]日志路径：[/bold yellow] {log_path}")
+
 
 ExistingPath = Annotated[Path, typer.Argument(exists=True, readable=True)]
 ForceOption = Annotated[
@@ -68,15 +110,19 @@ def prepare(
     ] = False,
 ) -> None:
     """Normalize input files without creating Atomic chunks."""
-    typer.echo(
-        str(
-            prepare_corpus(
-                input_path,
-                _config_with_root(corpus_root, verbose),
-                force=force,
+    try:
+        typer.echo(
+            str(
+                prepare_corpus(
+                    input_path,
+                    _config_with_root(corpus_root, verbose),
+                    force=force,
+                )
             )
         )
-    )
+    except DocchunkError as err:
+        _emit_docchunk_error(err, _guess_corpus_path(corpus_root, input_path))
+        raise typer.Exit(code=1) from err
 
 
 @app.command()
@@ -90,14 +136,21 @@ def split(
     ] = False,
 ) -> None:
     """Prepare, split, and batch a long-document corpus."""
-    result = split_corpus(
-        input_path,
-        _config_with_root(corpus_root, verbose),
-        force=force,
-    )
+    try:
+        result = split_corpus(
+            input_path,
+            _config_with_root(corpus_root, verbose),
+            force=force,
+        )
+    except DocchunkError as err:
+        _emit_docchunk_error(err, _guess_corpus_path(corpus_root, input_path))
+        raise typer.Exit(code=1) from err
+
     report = verify_corpus(result)
 
     if not report.ok:
+        # verify 内部的 ERROR 行由原 verify 命令输出风格保留；这里只补充四要素
+        _emit_docchunk_error(VerificationError("verification failed"), result)
         for error in report.errors:
             typer.echo(f"ERROR: {error}", err=True)
         raise typer.Exit(code=1)
@@ -130,7 +183,11 @@ def batch_command(
     corpus_path: ExistingPath,
 ) -> None:
     """Build reading batches from an existing Atomic corpus."""
-    typer.echo(str(batch_corpus(corpus_path, AppConfig())))
+    try:
+        typer.echo(str(batch_corpus(corpus_path, AppConfig())))
+    except DocchunkError as err:
+        _emit_docchunk_error(err, corpus_path)
+        raise typer.Exit(code=1) from err
 
 
 @app.command()
@@ -167,6 +224,14 @@ def rebuild_batches_command(
         overlap_atomic_count=overlap_atomic_count,
     )
     typer.echo(str(result))
+
+
+def _guess_corpus_path(corpus_root: Path | None, input_path: Path) -> Path | None:
+    """失败早期还没生成 corpus 路径时，给 errors 输出一个 best-effort 候选。"""
+    if corpus_root is None:
+        corpus_root = AppConfig().corpus_root
+    title = input_path.stem if input_path.is_file() else input_path.name
+    return corpus_root / title
 
 
 @app.command()

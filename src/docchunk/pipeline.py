@@ -449,15 +449,18 @@ def split_prepared_corpus(
     try:
         counter = TokenCounter(manifest.tokenizer.encoding)
 
-        atomic_dir = corpus_path / "atomic"
-        atomic_dir.mkdir(exist_ok=True)
-        for old in atomic_dir.glob("A*.md"):
-            old.unlink()
+        # 先在临时目录写入新 Atomic 集合；成功后再原子替换旧目录，
+        # 避免失败时 atomic 与 manifest 出现不可解释的部分状态。
+        staging_root = corpus_path.parent / f".{corpus_path.name}.staging"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        staging_paths = create_corpus_layout(staging_root.parent, staging_root.name)
+        staging_atomic_dir = staging_paths.root / "atomic"
+        staging_cleaned = False
 
+        atomic_dir = corpus_path / "atomic"
         index_path = corpus_path / "index.jsonl"
         index_path.write_text("", encoding="utf-8")
 
-        paths = create_corpus_layout(corpus_path.parent, corpus_path.name)
         global_sequence = 0
         records_for_combined: list[AtomicIndexRecord] = []
 
@@ -503,14 +506,42 @@ def split_prepared_corpus(
                     ),
                     context=context,
                 )
-                write_atomic_chunk(paths, record, chunk.text)
-                append_index_record(paths, record)
+                write_atomic_chunk(staging_paths, record, chunk.text)
+                append_index_record(staging_paths, record)
                 records_for_combined.append(record)
 
-        write_combined_view(paths, records_for_combined)
+        write_combined_view(staging_paths, records_for_combined)
         manifest.counts.atomic_chunks = global_sequence
         manifest.fingerprints.atomic_policy = expected_atomic_fp
-        write_manifest(paths, manifest)
+
+        # 成功后原子地替换 atomic/ 与 index.jsonl（保留旧 atomic 至 rename 完成）
+        if atomic_dir.exists():
+            for old in atomic_dir.glob("A*.md"):
+                old.unlink()
+        else:
+            atomic_dir.mkdir(parents=True, exist_ok=True)
+        for record in records_for_combined:
+            src = staging_atomic_dir / f"{record.atomic_id}.md"
+            dst = atomic_dir / f"{record.atomic_id}.md"
+            src.replace(dst)
+        staging_index = staging_paths.index_jsonl
+        index_path.write_text(
+            staging_index.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
+        # 重写 combined.md 到正式 corpus 根
+        write_combined_view(
+            create_corpus_layout(corpus_path.parent, corpus_path.name),
+            records_for_combined,
+        )
+
+        manifest_path = corpus_path / "manifest.json"
+        manifest_path.write_text(
+            manifest.model_dump_json(indent=2), encoding="utf-8"
+        )
+
+        # 清理 staging
+        staging_cleaned = True
     except Exception as exc:
         logger.tool_error("split", exc)
         _set_stage(
@@ -519,6 +550,11 @@ def split_prepared_corpus(
             error=f"{type(exc).__name__}: {exc}",
         )
         raise
+    finally:
+        import shutil as _shutil_final
+
+        if not staging_cleaned and staging_root.exists():
+            _shutil_final.rmtree(staging_root, ignore_errors=True)
 
     _set_stage(corpus_path, ProcessingStage.SPLIT)
     logger.log(
@@ -693,9 +729,10 @@ def rebuild_batches(
 
     report = verify_corpus(result)
     if not report.ok:
-        raise RuntimeError(
-            "Rebuilt batches failed verification: "
-            + "; ".join(report.errors)
+        from docchunk.errors import RebuildError
+
+        raise RebuildError(
+            "Rebuilt batches failed verification: " + "; ".join(report.errors)
         )
     return result
 

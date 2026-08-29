@@ -90,3 +90,45 @@ def test_verify_fails_when_batch_new_material_is_duplicated(tmp_path: Path) -> N
 
     report = verify_corpus(corpus)
     assert report.ok is False
+
+
+def test_verify_fails_when_source_file_changes(tmp_path: Path) -> None:
+    source = tmp_path / "a.md"
+    source.write_text("# 标题\n\n" + "原始内容。" * 200, encoding="utf-8")
+    corpus = split_corpus(source, verify_config(tmp_path / "corpora"))
+
+    source.write_text("# 标题\n\n" + "被改后的内容。" * 200, encoding="utf-8")
+
+    report = verify_corpus(corpus)
+    assert report.ok is False
+    assert any("source hash changed" in error.lower() for error in report.errors)
+
+
+def test_verify_fails_when_source_ref_is_tampered(tmp_path: Path) -> None:
+    source = tmp_path / "a.md"
+    source.write_text("# 标题\n\n" + "完整内容。" * 200, encoding="utf-8")
+    corpus = split_corpus(source, verify_config(tmp_path / "corpora"))
+
+    source_ref = corpus / "source" / "documents" / "D0001" / "source-ref.json"
+    import json
+
+    data = json.loads(source_ref.read_text(encoding="utf-8"))
+    data["adapter"] = "fake-adapter"
+    source_ref.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = verify_corpus(corpus)
+    assert report.ok is False
+    assert any("source-ref.json" in error.lower() for error in report.errors)
+
+
+def test_verify_warns_when_blocks_jsonl_drift_from_normalized(tmp_path: Path) -> None:
+    source = tmp_path / "a.md"
+    source.write_text("# 标题\n\n" + "完整内容。" * 300, encoding="utf-8")
+    corpus = split_corpus(source, verify_config(tmp_path / "corpora"))
+
+    normalized = corpus / "source" / "documents" / "D0001" / "normalized.md"
+    normalized.write_text(normalized.read_text(encoding="utf-8") + "\n追加噪音", encoding="utf-8")
+
+    report = verify_corpus(corpus)
+    assert report.ok is False
+    assert any("normalized source hash mismatch" in error.lower() for error in report.errors)
