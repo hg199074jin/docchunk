@@ -1,0 +1,28 @@
+[
+  {
+    "type": "text",
+    "text": "第一章",
+    "text_level": 1,
+    "page_idx": 0,
+    "bbox": [10, 10, 100, 30]
+  },
+  {
+    "type": "text",
+    "text": "这是第一页正文。",
+    "page_idx": 0,
+    "bbox": [10, 40, 200, 80]
+  },
+  {
+    "type": "text",
+    "text": "第二节",
+    "text_level": 2,
+    "page_idx": 1,
+    "bbox": [10, 10, 100, 30]
+  },
+  {
+    "type": "text",
+    "text": "这是第二页正文。",
+    "page_idx": 1,
+    "bbox": [10, 40, 200, 80]
+  }
+]
