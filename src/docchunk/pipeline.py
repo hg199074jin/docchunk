@@ -1,4 +1,6 @@
 import json
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 
 from docchunk.adapters.base import NormalizedBlock, NormalizedDocument
@@ -14,12 +16,15 @@ from docchunk.models.manifest import (
     AtomicPolicy,
     BatchPolicy,
     CorpusCounts,
+    CorpusFingerprints,
     Manifest,
     TokenizerConfig,
 )
+from docchunk.models.state import CorpusState, ProcessingStage
 from docchunk.provenance.mineru import source_pages_for_span
 from docchunk.splitting.atomic import split_atomic
 from docchunk.storage import (
+    CorpusPaths,
     append_index_record,
     create_corpus_layout,
     read_atomic_body,
@@ -53,6 +58,77 @@ def _source_inventory(input_path: Path, inputs: list[Path]) -> list[dict[str, st
         )
 
     return items
+
+
+def load_state(corpus_path: Path) -> CorpusState:
+    state_path = corpus_path / "state.json"
+    if not state_path.exists():
+        return CorpusState()
+    return CorpusState.model_validate_json(
+        state_path.read_text(encoding="utf-8")
+    )
+
+
+def write_state(corpus_path: Path, state: CorpusState) -> None:
+    (corpus_path / "state.json").write_text(
+        state.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+
+def _set_stage(
+    corpus_path: Path,
+    stage: ProcessingStage,
+    *,
+    error: str | None = None,
+) -> None:
+    state = load_state(corpus_path)
+    state.stage = stage
+    state.error = error
+    write_state(corpus_path, state)
+
+
+def _installed_version(package: str) -> str:
+    try:
+        return package_version(package)
+    except PackageNotFoundError:
+        return "not-installed"
+
+
+def _normalization_fingerprint(config: AppConfig) -> str:
+    return stable_fingerprint(
+        {
+            "docx_adapter": "pandoc",
+            "pdf_adapter": "mineru",
+            "docx_fallback_to_mineru": config.docx_fallback_to_mineru,
+        }
+    )
+
+
+def _atomic_policy_fingerprint(
+    manifest: Manifest,
+) -> str:
+    return stable_fingerprint(
+        {
+            "tokenizer": manifest.tokenizer.model_dump(),
+            "atomic_policy": manifest.atomic_policy.model_dump(),
+            "splitter_backend": "semantic-text-splitter",
+            "splitter_version": _installed_version("semantic-text-splitter"),
+            "schema_version": manifest.schema_version,
+        }
+    )
+
+
+def _batch_policy_fingerprint(
+    manifest: Manifest,
+) -> str:
+    return stable_fingerprint(
+        {
+            "batch_policy": manifest.batch_policy.model_dump(),
+            "batch_renderer": "v1",
+            "schema_version": manifest.schema_version,
+        }
+    )
 
 
 def _prepare_one_document(
@@ -138,21 +214,13 @@ def _policies_from_config(
     return atomic, batch
 
 
-def prepare_corpus(input_path: Path, config: AppConfig) -> Path:
-    input_path = input_path.resolve()
-    inputs = discover_inputs(input_path)
-    if not inputs:
-        raise ValueError("No supported input files found")
-
-    inventory = _source_inventory(input_path, inputs)
-    source_fingerprint = stable_fingerprint(inventory)
-    title = input_path.stem if input_path.is_file() else input_path.name
-    corpus_id = make_corpus_id(title, source_fingerprint)
-    paths = create_corpus_layout(config.corpus_root, corpus_id)
-
-    atomic_policy, batch_policy = _policies_from_config(config)
+def _prepare_documents(
+    paths: CorpusPaths,
+    inputs: list[Path],
+    config: AppConfig,
+    counter: TokenCounter,
+) -> tuple[list[dict[str, object]], int]:
     documents: list[dict[str, object]] = []
-    counter = TokenCounter(config.tokenizer_encoding)
     normalized_tokens = 0
 
     for number, source in enumerate(inputs, start=1):
@@ -169,6 +237,62 @@ def prepare_corpus(input_path: Path, config: AppConfig) -> Path:
         source_ref["document_id"] = document_id
         documents.append(source_ref)
         normalized_tokens += counter.count(document.text)
+
+    return documents, normalized_tokens
+
+
+def prepare_corpus(
+    input_path: Path,
+    config: AppConfig,
+    force: bool = False,
+) -> Path:
+    input_path = input_path.resolve()
+    inputs = discover_inputs(input_path)
+    if not inputs:
+        raise ValueError("No supported input files found")
+
+    inventory = _source_inventory(input_path, inputs)
+    source_fingerprint = stable_fingerprint(inventory)
+    title = input_path.stem if input_path.is_file() else input_path.name
+    corpus_id = make_corpus_id(title, source_fingerprint)
+    paths = create_corpus_layout(config.corpus_root, corpus_id)
+
+    atomic_policy, batch_policy = _policies_from_config(config)
+    normalization_fp = _normalization_fingerprint(config)
+    counter = TokenCounter(config.tokenizer_encoding)
+
+    if paths.manifest_json.exists() and not force:
+        existing = Manifest.model_validate_json(
+            paths.manifest_json.read_text(encoding="utf-8")
+        )
+        if (
+            existing.fingerprints.source == source_fingerprint
+            and existing.fingerprints.normalization == normalization_fp
+        ):
+            # prepare 阶段可以复用 normalized source，但要把“本次请求的”
+            # Atomic/Batch policy 写回 Manifest。后续阶段通过 fingerprint
+            # 判断是否只重切 Atomic 或只重建 Batch。
+            existing.atomic_policy = atomic_policy
+            existing.batch_policy = batch_policy
+            write_manifest(paths, existing)
+            return paths.root
+
+    _set_stage(paths.root, ProcessingStage.PREPARING)
+
+    try:
+        documents, normalized_tokens = _prepare_documents(
+            paths=paths,
+            inputs=inputs,
+            config=config,
+            counter=counter,
+        )
+    except Exception as exc:
+        _set_stage(
+            paths.root,
+            ProcessingStage.FAILED,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
 
     # 单文件提供一个便利入口，目录仍以 documents/Dxxxx 为权威。
     if len(documents) == 1:
@@ -196,8 +320,13 @@ def prepare_corpus(input_path: Path, config: AppConfig) -> Path:
             documents=len(documents),
             normalized_tokens=normalized_tokens,
         ),
+        fingerprints=CorpusFingerprints(
+            source=source_fingerprint,
+            normalization=normalization_fp,
+        ),
     )
     write_manifest(paths, manifest)
+    _set_stage(paths.root, ProcessingStage.PREPARED)
     return paths.root
 
 
@@ -254,74 +383,109 @@ def _source_location_for_chunk(
     )
 
 
-def split_prepared_corpus(corpus_path: Path, config: AppConfig) -> Path:
+def split_prepared_corpus(
+    corpus_path: Path,
+    config: AppConfig,
+    force: bool = False,
+) -> Path:
     corpus_path = corpus_path.resolve()
     manifest = Manifest.model_validate_json(
         (corpus_path / "manifest.json").read_text(encoding="utf-8")
     )
-    counter = TokenCounter(manifest.tokenizer.encoding)
 
-    atomic_dir = corpus_path / "atomic"
-    atomic_dir.mkdir(exist_ok=True)
-    for old in atomic_dir.glob("A*.md"):
-        old.unlink()
+    expected_atomic_fp = _atomic_policy_fingerprint(manifest)
+    atomic_files = list((corpus_path / "atomic").glob("A*.md"))
+    if (
+        not force
+        and manifest.fingerprints.atomic_policy == expected_atomic_fp
+        and (corpus_path / "index.jsonl").exists()
+        and atomic_files
+    ):
+        return corpus_path
 
-    index_path = corpus_path / "index.jsonl"
-    index_path.write_text("", encoding="utf-8")
+    manifest.verification.status = "pending"
+    manifest.verification.checked_at = None
+    manifest.verification.errors = []
+    write_manifest(
+        create_corpus_layout(corpus_path.parent, corpus_path.name),
+        manifest,
+    )
+    _set_stage(corpus_path, ProcessingStage.SPLITTING)
 
-    paths = create_corpus_layout(corpus_path.parent, corpus_path.name)
-    global_sequence = 0
-    records_for_combined: list[AtomicIndexRecord] = []
+    try:
+        counter = TokenCounter(manifest.tokenizer.encoding)
 
-    for raw_entry in manifest.documents:
-        entry = dict(raw_entry)
-        document_id = str(entry["document_id"])
-        document = _load_prepared_document(corpus_path, entry)
+        atomic_dir = corpus_path / "atomic"
+        atomic_dir.mkdir(exist_ok=True)
+        for old in atomic_dir.glob("A*.md"):
+            old.unlink()
 
-        chunks = split_atomic(
-            text=document.text,
-            counter=counter,
-            policy=manifest.atomic_policy,
-            markdown=document.media_type == "text/markdown",
+        index_path = corpus_path / "index.jsonl"
+        index_path.write_text("", encoding="utf-8")
+
+        paths = create_corpus_layout(corpus_path.parent, corpus_path.name)
+        global_sequence = 0
+        records_for_combined: list[AtomicIndexRecord] = []
+
+        for raw_entry in manifest.documents:
+            entry = dict(raw_entry)
+            document_id = str(entry["document_id"])
+            document = _load_prepared_document(corpus_path, entry)
+
+            chunks = split_atomic(
+                text=document.text,
+                counter=counter,
+                policy=manifest.atomic_policy,
+                markdown=document.media_type == "text/markdown",
+            )
+
+            for chunk in chunks:
+                global_sequence += 1
+                atomic_id = f"A{global_sequence:06d}"
+                source_location = _source_location_for_chunk(
+                    document,
+                    char_start=chunk.char_start,
+                    char_end=chunk.char_end,
+                )
+
+                context: dict[str, str] = {}
+                if chunk.table_header_context is not None:
+                    context["table_header"] = chunk.table_header_context
+
+                record = AtomicIndexRecord(
+                    atomic_id=atomic_id,
+                    document_id=document_id,
+                    sequence=global_sequence,
+                    path=f"atomic/{atomic_id}.md",
+                    token_count=chunk.token_count,
+                    char_start=chunk.char_start,
+                    char_end=chunk.char_end,
+                    heading_path=chunk.heading_path,
+                    source=source_location,
+                    flags=AtomicFlags(
+                        forced_split=chunk.forced_split,
+                        split_table=chunk.split_table,
+                        adapter_fallback=bool(entry.get("adapter_fallback", False)),
+                    ),
+                    context=context,
+                )
+                write_atomic_chunk(paths, record, chunk.text)
+                append_index_record(paths, record)
+                records_for_combined.append(record)
+
+        write_combined_view(paths, records_for_combined)
+        manifest.counts.atomic_chunks = global_sequence
+        manifest.fingerprints.atomic_policy = expected_atomic_fp
+        write_manifest(paths, manifest)
+    except Exception as exc:
+        _set_stage(
+            corpus_path,
+            ProcessingStage.FAILED,
+            error=f"{type(exc).__name__}: {exc}",
         )
+        raise
 
-        for chunk in chunks:
-            global_sequence += 1
-            atomic_id = f"A{global_sequence:06d}"
-            source_location = _source_location_for_chunk(
-                document,
-                char_start=chunk.char_start,
-                char_end=chunk.char_end,
-            )
-
-            context: dict[str, str] = {}
-            if chunk.table_header_context is not None:
-                context["table_header"] = chunk.table_header_context
-
-            record = AtomicIndexRecord(
-                atomic_id=atomic_id,
-                document_id=document_id,
-                sequence=global_sequence,
-                path=f"atomic/{atomic_id}.md",
-                token_count=chunk.token_count,
-                char_start=chunk.char_start,
-                char_end=chunk.char_end,
-                heading_path=chunk.heading_path,
-                source=source_location,
-                flags=AtomicFlags(
-                    forced_split=chunk.forced_split,
-                    split_table=chunk.split_table,
-                    adapter_fallback=bool(entry.get("adapter_fallback", False)),
-                ),
-                context=context,
-            )
-            write_atomic_chunk(paths, record, chunk.text)
-            append_index_record(paths, record)
-            records_for_combined.append(record)
-
-    write_combined_view(paths, records_for_combined)
-    manifest.counts.atomic_chunks = global_sequence
-    write_manifest(paths, manifest)
+    _set_stage(corpus_path, ProcessingStage.SPLIT)
     return corpus_path
 
 
@@ -333,52 +497,171 @@ def _load_atomic_records(corpus_path: Path) -> list[AtomicIndexRecord]:
     return records
 
 
-def batch_corpus(corpus_path: Path, config: AppConfig) -> Path:
+def batch_corpus(
+    corpus_path: Path,
+    config: AppConfig,
+    force: bool = False,
+) -> Path:
     corpus_path = corpus_path.resolve()
     manifest = Manifest.model_validate_json(
         (corpus_path / "manifest.json").read_text(encoding="utf-8")
     )
-    records = _load_atomic_records(corpus_path)
-    if not records:
-        raise ValueError("Corpus has no Atomic chunks; run split first")
 
-    atomic_texts = {
-        record.atomic_id: read_atomic_body(corpus_path / record.path)
-        for record in records
-    }
-    atomic_contexts = {
-        record.atomic_id: record.context
-        for record in records
-        if record.context
-    }
+    expected_batch_fp = _batch_policy_fingerprint(manifest)
+    batch_files = list((corpus_path / "batches").glob("B*.md"))
+    if (
+        not force
+        and manifest.fingerprints.batch_policy == expected_batch_fp
+        and batch_files
+    ):
+        return corpus_path
 
-    counter = TokenCounter(manifest.tokenizer.encoding)
-    batches = build_batches(
-        atomic_texts=atomic_texts,
-        counter=counter,
-        policy=manifest.batch_policy,
-        atomic_contexts=atomic_contexts,
+    manifest.verification.status = "pending"
+    manifest.verification.checked_at = None
+    manifest.verification.errors = []
+    write_manifest(
+        create_corpus_layout(corpus_path.parent, corpus_path.name),
+        manifest,
     )
+    _set_stage(corpus_path, ProcessingStage.BATCHING)
 
-    batches_dir = corpus_path / "batches"
-    batches_dir.mkdir(exist_ok=True)
-    for old in batches_dir.glob("B*.md"):
-        old.unlink()
+    try:
+        records = _load_atomic_records(corpus_path)
+        if not records:
+            raise ValueError("Corpus has no Atomic chunks; run split first")
 
-    for batch in batches:
-        (batches_dir / f"{batch.batch_id}.md").write_text(
-            batch.text,
-            encoding="utf-8",
+        atomic_texts = {
+            record.atomic_id: read_atomic_body(corpus_path / record.path)
+            for record in records
+        }
+        atomic_contexts = {
+            record.atomic_id: record.context
+            for record in records
+            if record.context
+        }
+
+        counter = TokenCounter(manifest.tokenizer.encoding)
+        batches = build_batches(
+            atomic_texts=atomic_texts,
+            counter=counter,
+            policy=manifest.batch_policy,
+            atomic_contexts=atomic_contexts,
         )
 
-    manifest.counts.reading_batches = len(batches)
-    paths = create_corpus_layout(corpus_path.parent, corpus_path.name)
-    write_manifest(paths, manifest)
+        batches_dir = corpus_path / "batches"
+        batches_dir.mkdir(exist_ok=True)
+        for old in batches_dir.glob("B*.md"):
+            old.unlink()
+
+        for batch in batches:
+            (batches_dir / f"{batch.batch_id}.md").write_text(
+                batch.text,
+                encoding="utf-8",
+            )
+
+        manifest.counts.reading_batches = len(batches)
+        manifest.fingerprints.batch_policy = expected_batch_fp
+        write_manifest(
+            create_corpus_layout(corpus_path.parent, corpus_path.name),
+            manifest,
+        )
+    except Exception as exc:
+        _set_stage(
+            corpus_path,
+            ProcessingStage.FAILED,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
+
+    _set_stage(corpus_path, ProcessingStage.BATCHED)
     return corpus_path
 
 
-def split_corpus(input_path: Path, config: AppConfig) -> Path:
-    corpus = prepare_corpus(input_path, config)
-    split_prepared_corpus(corpus, config)
-    batch_corpus(corpus, config)
-    return corpus
+def split_corpus(
+    input_path: Path,
+    config: AppConfig,
+    force: bool = False,
+) -> Path:
+    corpus = prepare_corpus(input_path, config, force=force)
+
+    try:
+        split_prepared_corpus(corpus, config, force=force)
+        batch_corpus(corpus, config, force=force)
+        return corpus
+    except Exception as exc:
+        _set_stage(
+            corpus,
+            ProcessingStage.FAILED,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
+
+
+def rebuild_batches(
+    corpus_path: Path,
+    target_tokens: int,
+    soft_min_tokens: int,
+    soft_max_tokens: int,
+    overlap_atomic_count: int,
+) -> Path:
+    corpus_path = corpus_path.resolve()
+    manifest_path = corpus_path / "manifest.json"
+    manifest = Manifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+
+    if not (0 < soft_min_tokens <= target_tokens <= soft_max_tokens):
+        raise ValueError(
+            "Batch token values must satisfy: "
+            "0 < soft_min <= target <= soft_max"
+        )
+
+    manifest.batch_policy = BatchPolicy(
+        target_tokens=target_tokens,
+        soft_min_tokens=soft_min_tokens,
+        soft_max_tokens=soft_max_tokens,
+        overlap_atomic_count=overlap_atomic_count,
+    )
+    manifest.fingerprints.batch_policy = ""
+    manifest_path.write_text(
+        manifest.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    result = batch_corpus(
+        corpus_path,
+        AppConfig(),
+        force=True,
+    )
+
+    from docchunk.verify import verify_corpus
+
+    report = verify_corpus(result)
+    if not report.ok:
+        raise RuntimeError(
+            "Rebuilt batches failed verification: "
+            + "; ".join(report.errors)
+        )
+    return result
+
+
+def corpus_status(corpus_path: Path) -> dict[str, object]:
+    corpus_path = corpus_path.resolve()
+    manifest = Manifest.model_validate_json(
+        (corpus_path / "manifest.json").read_text(encoding="utf-8")
+    )
+    state = load_state(corpus_path)
+
+    return {
+        "corpus_id": manifest.corpus_id,
+        "stage": state.stage.value,
+        "documents": manifest.counts.documents,
+        "atomic_chunks": manifest.counts.atomic_chunks,
+        "reading_batches": manifest.counts.reading_batches,
+        "verification": manifest.verification.status,
+        "source_fingerprint": manifest.fingerprints.source,
+        "tokenizer": manifest.tokenizer.encoding,
+        "atomic_policy": manifest.atomic_policy.model_dump(),
+        "batch_policy": manifest.batch_policy.model_dump(),
+        "last_error": state.error,
+    }

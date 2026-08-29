@@ -38,6 +38,13 @@ class VerificationInfo(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class CorpusFingerprints(BaseModel):
+    source: str = ""
+    normalization: str = ""
+    atomic_policy: str = ""
+    batch_policy: str = ""
+
+
 class Manifest(BaseModel):
     schema_version: str = "1.0"
     corpus_id: str
@@ -52,3 +59,4 @@ class Manifest(BaseModel):
     normalization: dict[str, object] = Field(default_factory=dict)
     counts: CorpusCounts = Field(default_factory=CorpusCounts)
     verification: VerificationInfo = Field(default_factory=VerificationInfo)
+    fingerprints: CorpusFingerprints = Field(default_factory=CorpusFingerprints)

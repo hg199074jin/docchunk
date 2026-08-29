@@ -2,9 +2,17 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.console import Console
+from rich.table import Table
 
 from docchunk.config import AppConfig
-from docchunk.pipeline import batch_corpus, prepare_corpus, split_corpus
+from docchunk.pipeline import (
+    batch_corpus,
+    corpus_status,
+    prepare_corpus,
+    rebuild_batches,
+    split_corpus,
+)
 from docchunk.verify import verify_corpus
 
 app = typer.Typer(
@@ -13,7 +21,13 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+console = Console()
+
 ExistingPath = Annotated[Path, typer.Argument(exists=True, readable=True)]
+ForceOption = Annotated[
+    bool,
+    typer.Option("--force", help="Regenerate reusable stages even if fingerprints match."),
+]
 
 
 @app.callback()
@@ -40,18 +54,24 @@ def _config_with_root(corpus_root: Path | None) -> AppConfig:
 def prepare(
     input_path: ExistingPath,
     corpus_root: Annotated[Path | None, typer.Option("--corpus-root")] = None,
+    force: ForceOption = False,
 ) -> None:
     """Normalize input files without creating Atomic chunks."""
-    typer.echo(str(prepare_corpus(input_path, _config_with_root(corpus_root))))
+    typer.echo(str(prepare_corpus(input_path, _config_with_root(corpus_root), force=force)))
 
 
 @app.command()
 def split(
     input_path: ExistingPath,
     corpus_root: Annotated[Path | None, typer.Option("--corpus-root")] = None,
+    force: ForceOption = False,
 ) -> None:
     """Prepare, split, and batch a long-document corpus."""
-    result = split_corpus(input_path, _config_with_root(corpus_root))
+    result = split_corpus(
+        input_path,
+        _config_with_root(corpus_root),
+        force=force,
+    )
     report = verify_corpus(result)
 
     if not report.ok:
@@ -88,3 +108,39 @@ def batch_command(
 ) -> None:
     """Build reading batches from an existing Atomic corpus."""
     typer.echo(str(batch_corpus(corpus_path, AppConfig())))
+
+
+@app.command()
+def status(corpus_path: ExistingPath) -> None:
+    """Show corpus processing state and active policies."""
+    data = corpus_status(corpus_path)
+    table = Table(title="docchunk corpus status")
+    table.add_column("Field")
+    table.add_column("Value")
+
+    for key, value in data.items():
+        table.add_row(key, str(value))
+
+    console.print(table)
+
+
+@app.command("rebuild-batches")
+def rebuild_batches_command(
+    corpus_path: ExistingPath,
+    target_tokens: Annotated[int, typer.Option("--target-tokens")] = 24000,
+    soft_min_tokens: Annotated[int, typer.Option("--soft-min-tokens")] = 16000,
+    soft_max_tokens: Annotated[int, typer.Option("--soft-max-tokens")] = 32000,
+    overlap_atomic_count: Annotated[
+        int,
+        typer.Option("--overlap-atomic-count"),
+    ] = 1,
+) -> None:
+    """Rebuild only reading batches; never regenerate Atomic chunks."""
+    result = rebuild_batches(
+        corpus_path=corpus_path,
+        target_tokens=target_tokens,
+        soft_min_tokens=soft_min_tokens,
+        soft_max_tokens=soft_max_tokens,
+        overlap_atomic_count=overlap_atomic_count,
+    )
+    typer.echo(str(result))

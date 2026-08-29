@@ -291,6 +291,22 @@ def verify_corpus(
             encoding="utf-8",
         )
 
+        from docchunk.models.state import CorpusState, ProcessingStage
+
+        state = (
+            CorpusState.model_validate_json(
+                (corpus_path / "state.json").read_text(encoding="utf-8")
+            )
+            if (corpus_path / "state.json").exists()
+            else CorpusState()
+        )
+        state.stage = ProcessingStage.READY if ok else ProcessingStage.FAILED
+        state.error = None if ok else "Corpus verification failed"
+        (corpus_path / "state.json").write_text(
+            state.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+
     return VerificationReport(
         ok=ok,
         errors=errors,
