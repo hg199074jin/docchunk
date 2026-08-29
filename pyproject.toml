@@ -32,6 +32,9 @@ packages = ["src/docchunk"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+  "external: requires installed external tools such as pandoc or mineru",
+]
 
 [tool.ruff]
 target-version = "py312"
