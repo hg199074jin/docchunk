@@ -236,7 +236,7 @@ def _guess_corpus_path(corpus_root: Path | None, input_path: Path) -> Path | Non
 
 @app.command()
 def doctor() -> None:
-    """Check the local environment: python, pandoc, mineru, tiktoken, corpus root."""
+    """Check the local environment and PDF processing dependencies."""
     report = run_doctor()
 
     for check in report.checks:
@@ -260,5 +260,10 @@ def inspect(
 
     for key, value in data.items():
         if value is None:
+            continue
+        if key == "pdf_inspections" and isinstance(value, list) and value:
+            console.print("pdf_inspections:")
+            for inspection in value:
+                console.print(f"  {inspection}")
             continue
         console.print(f"{key}: {value}")

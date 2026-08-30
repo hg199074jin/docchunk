@@ -2,6 +2,7 @@ import json
 import unittest.mock
 from pathlib import Path
 
+from docchunk.adapters.base import NormalizedDocument
 from docchunk.config import AppConfig
 from docchunk.errors import ExternalToolError
 from docchunk.pipeline import prepare_corpus, split_corpus
@@ -73,6 +74,30 @@ def test_prepare_only_normalizes_sources(tmp_path: Path) -> None:
     assert (corpus / "source" / "normalized.md").exists()
     assert not list((corpus / "atomic").glob("A*.md"))
     assert not list((corpus / "batches").glob("B*.md"))
+
+
+def test_prepare_persists_document_sidecars(tmp_path: Path) -> None:
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"%PDF-fake")
+    config = small_config(tmp_path / "corpora")
+    document = NormalizedDocument(
+        source_path=source,
+        media_type="text/markdown",
+        text="page text",
+        sidecars={"page-routing.jsonl": '{"page_idx":0}\n'},
+        metadata={"adapter": "smart_pdf", "parser_route": "native_only"},
+    )
+
+    with unittest.mock.patch(
+        "docchunk.pipeline.choose_adapter",
+        return_value=unittest.mock.Mock(prepare=unittest.mock.Mock(return_value=document)),
+    ):
+        corpus = prepare_corpus(source, config)
+
+    document_dir = corpus / "source" / "documents" / "D0001"
+    assert (document_dir / "page-routing.jsonl").read_text(encoding="utf-8") == '{"page_idx":0}\n'
+    source_ref = json.loads((document_dir / "source-ref.json").read_text(encoding="utf-8"))
+    assert source_ref["sidecars"]["page-routing.jsonl"].endswith("page-routing.jsonl")
 
 
 def test_split_writes_structured_processing_log(tmp_path: Path) -> None:

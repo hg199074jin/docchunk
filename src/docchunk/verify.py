@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from docchunk.fingerprints import sha256_file, sha256_text
 from docchunk.models.index import AtomicIndexRecord
 from docchunk.models.manifest import Manifest, utc_now_iso
+from docchunk.models.pdf import page_index_to_number
 from docchunk.storage import read_atomic_body
 from docchunk.tokenizer import TokenCounter
 
@@ -327,6 +328,51 @@ def verify_corpus(
                     f"{document_id} has {unaligned} MinerU blocks that "
                     "could not be aligned to normalized Markdown"
                 )
+
+        sidecars = entry_dict.get("sidecars")
+        if isinstance(sidecars, dict) and isinstance(sidecars.get("page-routing.jsonl"), str):
+            routing_path = corpus_path / str(sidecars["page-routing.jsonl"])
+            if not routing_path.exists():
+                errors.append(f"Missing page-routing sidecar for {document_id}")
+            else:
+                try:
+                    routing_rows = [
+                        json.loads(line)
+                        for line in routing_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                except (OSError, ValueError) as exc:
+                    errors.append(f"Invalid page-routing.jsonl for {document_id}: {exc}")
+                else:
+                    expected_count: int | None = None
+                    if isinstance(metadata, dict):
+                        inspection = metadata.get("pdf_inspection")
+                        if isinstance(inspection, dict) and isinstance(
+                            inspection.get("page_count"), int
+                        ):
+                            expected_count = int(inspection["page_count"])
+                    if expected_count is not None and len(routing_rows) != expected_count:
+                        errors.append(
+                            f"page-routing.jsonl for {document_id} has {len(routing_rows)} "
+                            f"rows; expected {expected_count}"
+                        )
+                    for page_idx, row in enumerate(routing_rows):
+                        if not isinstance(row, dict):
+                            errors.append(
+                                f"page-routing.jsonl for {document_id} row {page_idx + 1} "
+                                "is not an object"
+                            )
+                            continue
+                        if row.get("page_idx") != page_idx:
+                            errors.append(
+                                f"page-routing.jsonl for {document_id} has non-contiguous "
+                                f"page_idx at row {page_idx + 1}"
+                            )
+                        if row.get("page_number") != page_index_to_number(page_idx):
+                            errors.append(
+                                f"page-routing.jsonl for {document_id} has invalid page_number "
+                                f"at row {page_idx + 1}"
+                            )
 
     ok = not errors
 

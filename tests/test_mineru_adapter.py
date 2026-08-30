@@ -93,3 +93,24 @@ def test_mineru_adapter_handles_glob_metacharacters_in_filename(tmp_path) -> Non
     assert doc.blocks[0].page_idx == 0
     assert doc.blocks[0].char_start == doc.text.index("标题")
     assert doc.metadata["unaligned_blocks"] == 0
+
+
+def test_mineru_prepare_page_uses_original_page_index(tmp_path) -> None:
+    pdf = tmp_path / "book.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+
+    output = tmp_path / "mineru-output"
+    output.mkdir()
+    (output / "book.md").write_text("扫描页内容", encoding="utf-8")
+    (output / "book_content_list.json").write_text(
+        '[{"type":"text","text":"扫描页内容","page_idx":0}]',
+        encoding="utf-8",
+    )
+
+    adapter = MinerUAdapter()
+    with patch.object(adapter, "_run_mineru", return_value=output) as run:
+        fragment = adapter.prepare_page(pdf, 37)
+
+    run.assert_called_once_with(pdf, start_page=37, end_page=37)
+    assert fragment.page_idx == 37
+    assert fragment.blocks[0].page_idx == 37

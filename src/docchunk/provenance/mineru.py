@@ -1,4 +1,11 @@
 from docchunk.adapters.base import NormalizedBlock
+from docchunk.provenance.pages import source_pages_for_span
+
+__all__ = [
+    "align_blocks_to_markdown",
+    "parse_content_list",
+    "source_pages_for_span",
+]
 
 
 def parse_content_list(content: list[dict[str, object]]) -> list[NormalizedBlock]:
@@ -66,23 +73,3 @@ def align_blocks_to_markdown(
         search_cursor = end
 
     return aligned
-
-
-def source_pages_for_span(
-    blocks: list[NormalizedBlock],
-    char_start: int,
-    char_end: int,
-) -> tuple[int | None, int | None]:
-    page_indexes = [
-        block.page_idx
-        for block in blocks
-        if block.page_idx is not None
-        and block.char_start < char_end
-        and block.char_end > char_start
-    ]
-
-    if not page_indexes:
-        return None, None
-
-    # MinerU 0-based → 用户可读 1-based。
-    return min(page_indexes) + 1, max(page_indexes) + 1

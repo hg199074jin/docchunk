@@ -69,12 +69,26 @@ uv run docchunk split "$HOME/Documents/report.docx"
 
 默认走 Pandoc 转 GFM Markdown。Pandoc 失败会显式报错；只有显式开启 `docx_fallback_to_mineru` 才会降级，且降级会被记录在 Manifest 中。
 
-## PDF 示例（MinerU）
+## PDF 示例（Page-Level Smart Routing）
 
-先确认环境（`docchunk` 会自动解析 MinerU 路径，`doctor` 可查看解析结果）：
+PDF 会先由 `pdf-inspector` 检查并逐页提取原生文字：
+
+- native-safe 页面直接使用 `pdf-inspector`，不调用 MinerU；
+- `needs_ocr` 页面单独交给 MinerU，使用原 PDF 的页范围；
+- Mixed PDF 按原始页码合并两类结果，不会因为一页扫描而整份 OCR；
+- 表格、多栏和分类 confidence 只用于诊断，不会单独触发 OCR；
+- `pdf-inspector` 自带 OCR 不启用。
+
+先确认环境（`doctor` 会同时检查 `pdf-inspector` 和 MinerU）：
 
 ```bash
 uv run docchunk doctor
+```
+
+运行页级预检，查看计划使用 OCR 的页面：
+
+```bash
+uv run docchunk inspect "$HOME/Documents/audit-report.pdf"
 ```
 
 再运行：
@@ -83,7 +97,7 @@ uv run docchunk doctor
 uv run docchunk split "$HOME/Documents/book.pdf"
 ```
 
-PDF 默认走 MinerU（本机默认 `-b hybrid-engine --effort medium`），产出 Markdown 的同时保留 `content_list` 页码溯源——每个 Atomic 都能回查到原 PDF 页码。
+PDF 默认走 SmartPdfAdapter（MinerU 本机默认 `-b hybrid-engine --effort medium`）。每个 PDF 文档会额外产出 `page-routing.jsonl`，记录每一页实际使用的 parser、路由原因和 0/1-based 页码映射；每个 Atomic 仍可回查原 PDF 页码。
 
 ## 整个课程文件夹示例
 
@@ -111,6 +125,12 @@ uv run docchunk split "$HOME/Documents/课程"
 ├── source/              # normalized 原文 + blocks + source-ref
 ├── atomic/Axxxxxx.md    # 最小阅读单元（frontmatter + 原样正文）
 └── batches/Bxxxx.md     # 模型实际阅读的窗口（含 Context Bridge 标记）
+```
+
+PDF 文档目录还包含：
+
+```text
+source/documents/D0001/page-routing.jsonl  # 一页一行的路由审计证据
 ```
 
 ## verify：完整性校验
@@ -159,6 +179,7 @@ Router 会校验 Corpus → 按 Batch 调度 → 维护断点 → 交给下游 S
 | 症状 | 原因 | 怎么办 |
 |---|---|---|
 | `Pandoc executable was not found` | 没装或 PATH 不对 | `brew install pandoc` |
+| `pdf-inspector` 检查失败 | PDF 无法可靠完成页级预检 | `uv run docchunk doctor`；必要时查看 processing.jsonl |
 | `MinerU executable was not found` | MinerU 不在 PATH 且 venv 回退也失败 | `uv run docchunk doctor`；或在配置中写可执行文件绝对路径 |
 | verify missing atomic | Corpus 被人为移动/删除 | 保留原 Corpus，重新 `split --force` 或修复损坏文件 |
 | forced split 很多 | OCR 无标点/超大表格 | 检查 MinerU 输出质量（`docchunk inspect` 也会给 warning） |
@@ -184,6 +205,10 @@ rm -rf <你的 corpus-root>              # 删除生成的 Corpus（默认 /Volu
 
 - [设计稿](docs/superpowers/specs/2026-08-29-docchunk-longdoc-router-design.md)
 - [实施计划](docs/superpowers/plans/2026-08-29-docchunk-longdoc-router-v1.md)
+
+## PDF 路由策略
+
+当前策略版本为 `page_smart_v1`。页内业务逻辑统一使用 `page_idx`（从 0 开始），只在用户输出和 `page-routing.jsonl` 中转换为 `page_number`（从 1 开始）。原始 PDF 永远只读；MinerU 的单页临时目录在成功或失败后都会清理。
 
 ## License
 

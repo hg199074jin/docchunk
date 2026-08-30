@@ -1,6 +1,8 @@
 import shutil
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 
 from pydantic import BaseModel
 
@@ -62,6 +64,25 @@ def _check_pandoc() -> DoctorCheck:
         )
 
     return DoctorCheck(name="pandoc", ok=True, detail=f"{version} @ {path}")
+
+
+def _check_pdf_inspector() -> DoctorCheck:
+    try:
+        import pdf_inspector
+
+        version = package_version("pdf-inspector")
+        return DoctorCheck(
+            name="pdf-inspector",
+            ok=True,
+            detail=f"{version} @ {pdf_inspector.__file__}",
+        )
+    except (ImportError, PackageNotFoundError, OSError) as exc:
+        return DoctorCheck(
+            name="pdf-inspector",
+            ok=False,
+            detail=f"not available: {exc}",
+            fix="run: uv sync",
+        )
 
 
 def _check_mineru(config: AppConfig) -> DoctorCheck:
@@ -149,6 +170,7 @@ def run_doctor(config: AppConfig | None = None) -> DoctorReport:
         checks=[
             _check_python(),
             _check_pandoc(),
+            _check_pdf_inspector(),
             _check_mineru(config),
             _check_tiktoken(config),
             _check_corpus_root(config),

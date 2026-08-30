@@ -7,7 +7,7 @@ from docchunk.adapters.base import NormalizedBlock, NormalizedDocument
 from docchunk.adapters.directory import discover_inputs
 from docchunk.adapters.mineru import MinerUAdapter
 from docchunk.batching.builder import build_batches
-from docchunk.config import AppConfig
+from docchunk.config import AppConfig, resolve_mineru_command
 from docchunk.errors import ExternalToolError
 from docchunk.fingerprints import sha256_file, sha256_text, stable_fingerprint
 from docchunk.inspect_input import choose_adapter
@@ -21,8 +21,9 @@ from docchunk.models.manifest import (
     Manifest,
     TokenizerConfig,
 )
+from docchunk.models.pdf import PAGE_SMART_PDF_POLICY_VERSION
 from docchunk.models.state import CorpusState, ProcessingStage
-from docchunk.provenance.mineru import source_pages_for_span
+from docchunk.provenance.pages import source_pages_for_span
 from docchunk.splitting.atomic import split_atomic
 from docchunk.storage import (
     CorpusPaths,
@@ -100,7 +101,14 @@ def _normalization_fingerprint(config: AppConfig) -> str:
     return stable_fingerprint(
         {
             "docx_adapter": "pandoc",
-            "pdf_adapter": "mineru",
+            "pdf_adapter": "smart_pdf",
+            "pdf_policy": PAGE_SMART_PDF_POLICY_VERSION,
+            "pdf_inspector_version": _installed_version("pdf-inspector"),
+            "mineru_version": _installed_version("mineru"),
+            "mineru_command": resolve_mineru_command(config.mineru_command),
+            "mineru_backend": config.mineru_backend,
+            "mineru_effort": config.mineru_effort,
+            "mineru_page_method": "single_page_range",
             "docx_fallback_to_mineru": config.docx_fallback_to_mineru,
         }
     )
@@ -179,6 +187,15 @@ def _write_normalized_document(
             handle.write(block.model_dump_json())
             handle.write("\n")
 
+    sidecar_paths: dict[str, str] = {}
+    for name, content in document.sidecars.items():
+        sidecar_name = Path(name)
+        if sidecar_name.is_absolute() or sidecar_name.name != name or name in {"", ".", ".."}:
+            raise ValueError(f"Invalid sidecar name: {name!r}")
+        sidecar_path = document_dir / sidecar_name
+        sidecar_path.write_text(content, encoding="utf-8")
+        sidecar_paths[name] = str(sidecar_path.relative_to(corpus_root))
+
     source_ref = {
         "source_path": str(document.source_path.resolve()),
         "source_sha256": source_sha256,
@@ -187,9 +204,13 @@ def _write_normalized_document(
         "adapter_fallback": bool(document.metadata.get("adapter_fallback", False)),
         "normalized_path": str(normalized_path.relative_to(corpus_root)),
         "blocks_path": str(blocks_path.relative_to(corpus_root)),
+        "sidecars": sidecar_paths,
         "normalized_sha256": sha256_text(document.text),
         "metadata": document.metadata,
     }
+    for key in ("parser_route", "pdf_inspection", "routing"):
+        if key in document.metadata:
+            source_ref[key] = document.metadata[key]
 
     (document_dir / "source-ref.json").write_text(
         json.dumps(source_ref, ensure_ascii=False, indent=2, default=str),
@@ -239,6 +260,42 @@ def _prepare_documents(
         source_ref["document_id"] = document_id
         documents.append(source_ref)
         normalized_tokens += counter.count(document.text)
+        if document.metadata.get("adapter") == "smart_pdf":
+            inspection = document.metadata.get("pdf_inspection")
+            if inspection is not None:
+                logger.log(
+                    "pdf_inspection",
+                    "completed",
+                    f"inspected {source.name}",
+                    document_id=document_id,
+                    extra={"summary": inspection},
+                )
+            logger.log(
+                "pdf_page_route",
+                "completed",
+                f"routed {source.name}",
+                document_id=document_id,
+                extra={
+                    "parser_route": document.metadata.get("parser_route"),
+                    "native_pages": document.metadata.get("native_pages", 0),
+                    "mineru_pages": document.metadata.get("mineru_pages", 0),
+                },
+            )
+            if document.metadata.get("fallback_reason"):
+                logger.log(
+                    "pdf_page_fallback",
+                    "completed",
+                    f"used whole-PDF fallback for {source.name}",
+                    document_id=document_id,
+                    extra={"reason": document.metadata["fallback_reason"]},
+                )
+            logger.log(
+                "pdf_assembly",
+                "completed",
+                f"assembled {source.name}",
+                document_id=document_id,
+                extra={"characters": len(document.text)},
+            )
         logger.log(
             "prepare",
             "completed",
@@ -372,15 +429,27 @@ def _load_prepared_document(
             if line.strip():
                 blocks.append(NormalizedBlock.model_validate_json(line))
 
+    metadata = document_entry.get("metadata")
+    normalized_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    normalized_metadata.setdefault("adapter", document_entry.get("adapter", "direct"))
+    normalized_metadata.setdefault(
+        "adapter_fallback",
+        document_entry.get("adapter_fallback", False),
+    )
+    sidecars: dict[str, str] = {}
+    raw_sidecars = document_entry.get("sidecars")
+    if isinstance(raw_sidecars, dict):
+        for name, relative_path in raw_sidecars.items():
+            if isinstance(name, str) and isinstance(relative_path, str):
+                sidecars[name] = (corpus_root / relative_path).read_text(encoding="utf-8")
+
     return NormalizedDocument(
         source_path=Path(str(document_entry["source_path"])),
         media_type=str(document_entry["media_type"]),
         text=text,
         blocks=blocks,
-        metadata={
-            "adapter": document_entry.get("adapter", "direct"),
-            "adapter_fallback": document_entry.get("adapter_fallback", False),
-        },
+        metadata=normalized_metadata,
+        sidecars=sidecars,
     )
 
 

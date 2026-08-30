@@ -4,6 +4,7 @@ import pytest
 
 from docchunk.adapters.directory import discover_inputs
 from docchunk.adapters.markdown import MarkdownAdapter
+from docchunk.adapters.pdf import SmartPdfAdapter
 from docchunk.errors import UnsupportedInputError
 from docchunk.inspect_input import choose_adapter
 
@@ -23,6 +24,10 @@ def test_directory_uses_natural_numeric_order(tmp_path: Path) -> None:
 
 def test_choose_markdown_adapter() -> None:
     assert isinstance(choose_adapter(Path("a.md")), MarkdownAdapter)
+
+
+def test_choose_smart_pdf_adapter() -> None:
+    assert isinstance(choose_adapter(Path("report.pdf")), SmartPdfAdapter)
 
 
 def test_unknown_extension_is_rejected() -> None:

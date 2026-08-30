@@ -19,6 +19,7 @@ def test_doctor_all_ok_reports_true() -> None:
     assert {check.name for check in report.checks} >= {
         "python",
         "pandoc",
+        "pdf-inspector",
         "mineru",
         "tiktoken",
         "corpus_root",

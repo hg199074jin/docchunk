@@ -3,11 +3,17 @@ from pathlib import Path
 from docchunk.adapters.base import DocumentAdapter
 from docchunk.adapters.directory import SUPPORTED_SUFFIXES, discover_inputs
 from docchunk.adapters.markdown import MarkdownAdapter
-from docchunk.adapters.mineru import MinerUAdapter
 from docchunk.adapters.pandoc import PandocAdapter
+from docchunk.adapters.pdf import SmartPdfAdapter
+from docchunk.adapters.pdf_inspector import PdfInspectorAdapter
 from docchunk.adapters.text import TextAdapter
 from docchunk.config import AppConfig
 from docchunk.errors import UnsupportedInputError
+from docchunk.models.pdf import (
+    PAGE_SMART_PDF_POLICY_VERSION,
+    format_page_ranges,
+    page_index_to_number,
+)
 
 
 def choose_adapter(
@@ -25,7 +31,7 @@ def choose_adapter(
     if suffix == ".docx":
         return PandocAdapter()
     if suffix == ".pdf":
-        return MinerUAdapter(
+        return SmartPdfAdapter(
             command=mineru_command,
             backend=mineru_backend,
             effort=mineru_effort,
@@ -65,6 +71,36 @@ def analyze_input(path: Path, config: AppConfig) -> dict[str, object]:
         )
         return type(adapter).__name__
 
+    pdf_inspections: list[dict[str, object]] = []
+    for item in inputs:
+        if item.suffix.casefold() != ".pdf":
+            continue
+        try:
+            bundle = PdfInspectorAdapter().inspect_and_extract(item)
+        except Exception as exc:  # noqa: BLE001 — inspect must report, never call MinerU
+            pdf_inspections.append({"file": item.name, "error": str(exc)})
+            continue
+        summary = bundle.summary
+        ocr_pages = [
+            page_index_to_number(page.page_idx)
+            for page in bundle.pages
+            if page.needs_ocr
+        ]
+        pdf_inspections.append(
+            {
+                "file": item.name,
+                "type": summary.pdf_type,
+                "pages": summary.page_count,
+                "planned_native": summary.page_count - len(ocr_pages),
+                "planned_mineru": len(ocr_pages),
+                "ocr_pages": format_page_ranges(ocr_pages),
+                "tables": format_page_ranges(summary.pages_with_tables),
+                "columns": format_page_ranges(summary.pages_with_columns),
+                "encoding_issues": summary.has_encoding_issues,
+                "policy": PAGE_SMART_PDF_POLICY_VERSION,
+            }
+        )
+
     return {
         "input_type": "directory" if path.is_dir() else "file",
         "file_count": len(inputs),
@@ -77,6 +113,7 @@ def analyze_input(path: Path, config: AppConfig) -> dict[str, object]:
         ),
         "files_needing_conversion": needs_conversion,
         "adapters": sorted({_adapter_name(item) for item in inputs}),
+        "pdf_inspections": pdf_inspections,
         "atomic_profile": {
             "target_tokens": config.atomic_target_tokens,
             "soft_range": [config.atomic_soft_min_tokens, config.atomic_soft_max_tokens],

@@ -20,6 +20,7 @@ class NormalizedDocument(BaseModel):
     text: str
     blocks: list[NormalizedBlock] = Field(default_factory=list)
     metadata: dict[str, object] = Field(default_factory=dict)
+    sidecars: dict[str, str] = Field(default_factory=dict)
 
 
 class DocumentAdapter(ABC):
