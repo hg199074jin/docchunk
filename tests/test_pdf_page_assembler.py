@@ -64,7 +64,9 @@ def test_assembler_orders_pages_and_rebases_offsets() -> None:
 
     assert doc.text == "第一页\n\n第二页"
     assert [block.page_idx for block in doc.blocks] == [0, 1]
-    assert doc.text[doc.blocks[1].char_start : doc.blocks[1].char_end] == "第二页"
+    # 后续页 block 吸收页边界 "\n\n" 前缀，保证全文被 block 完整覆盖
+    assert doc.blocks[1].text.endswith("第二页")
+    assert doc.blocks[1].char_start == len("第一页")
     assert doc.blocks[1].block_index == 1
     assert doc.metadata["adapter"] == "smart_pdf"
     assert doc.metadata["parser_route"] == "mixed"
@@ -123,7 +125,8 @@ def test_assembler_keeps_blank_page_numbers_stable() -> None:
     # 空白页不产生正文 block，但后续页码不得漂移
     assert [(block.page_idx, block.block_index) for block in doc.blocks] == [(0, 0), (2, 1)]
     third = doc.blocks[1]
-    assert doc.text[third.char_start : third.char_end] == "第三页"
+    assert third.text == "\n\n\n\n第三页"
+    assert doc.text[third.char_start : third.char_end] == third.text
     assert len(doc.sidecars["page-routing.jsonl"].splitlines()) == 3
 
 

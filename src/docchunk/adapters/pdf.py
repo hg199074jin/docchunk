@@ -72,27 +72,46 @@ def assemble_page_fragments(
     blocks: list[NormalizedBlock] = []
     cursor = 0
     block_index = 0
+    # 页边界 "\n\n" 不属于任何一页原文；吸收进下一个非空页 block 的前缀，
+    # 避免分隔符落进任何 page block 之外、被切出无页码 provenance 的碎 chunk。
+    pending_boundaries = 0
 
     for position, fragment in enumerate(ordered):
         if position > 0:
             parts.append("\n\n")
             cursor += 2
+            pending_boundaries += 1
 
         text = normalize_line_endings(fragment.markdown)
         parts.append(text)
-
-        if text:
-            blocks.append(
-                NormalizedBlock(
-                    block_index=block_index,
-                    char_start=cursor,
-                    char_end=cursor + len(text),
-                    text=text,
-                    page_idx=fragment.page_idx,
-                )
-            )
-            block_index += 1
         cursor += len(text)
+
+        if not text:
+            continue
+
+        prefix = "\n\n" * pending_boundaries
+        pending_boundaries = 0
+        block_text = prefix + text
+        blocks.append(
+            NormalizedBlock(
+                block_index=block_index,
+                char_start=cursor - len(block_text),
+                char_end=cursor,
+                text=block_text,
+                page_idx=fragment.page_idx,
+            )
+        )
+        block_index += 1
+
+    if blocks and pending_boundaries:
+        # 尾部空白页留下的分隔符归最后一个 block，保证全文被 block 覆盖
+        last = blocks[-1]
+        blocks[-1] = last.model_copy(
+            update={
+                "char_end": cursor,
+                "text": last.text + "\n\n" * pending_boundaries,
+            }
+        )
 
     native_pages = sum(route.parser == "pdf_inspector" for route in routes)
 
