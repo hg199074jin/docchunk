@@ -5,6 +5,10 @@ from pydantic import BaseModel, Field
 
 _MINERU_VENV_FALLBACK = Path.home() / ".venvs" / "mineru" / "bin" / "mineru"
 
+# Smart PDF 路由策略版本：变化会改变 normalized Markdown，
+# 因此进入 normalization fingerprint，旧缓存自动失效（设计 §41）。
+PAGE_SMART_PDF_POLICY_VERSION = "page_smart_v1"
+
 
 def resolve_mineru_command(configured: str = "mineru") -> str:
     if configured != "mineru":
