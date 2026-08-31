@@ -1,12 +1,35 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from docchunk.models.index import AtomicFlags, AtomicIndexRecord, SourceLocation
 from docchunk.storage import (
     append_index_record,
     create_corpus_layout,
     write_atomic_chunk,
+    write_document_sidecars,
 )
+
+
+def test_write_document_sidecars_writes_only_basename_files(tmp_path: Path) -> None:
+    written = write_document_sidecars(
+        tmp_path,
+        {"page-routing.jsonl": '{"page_idx":0}\n'},
+    )
+
+    assert written == {"page-routing.jsonl": "page-routing.jsonl"}
+    assert (tmp_path / "page-routing.jsonl").read_text(encoding="utf-8") == '{"page_idx":0}\n'
+
+
+def test_write_document_sidecars_rejects_path_traversal(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        write_document_sidecars(tmp_path, {"../escape.txt": "bad"})
+
+
+def test_write_document_sidecars_rejects_nested_names(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        write_document_sidecars(tmp_path, {"sub/dir.jsonl": "bad"})
 
 
 def test_storage_writes_atomic_and_jsonl(tmp_path: Path) -> None:

@@ -20,6 +20,9 @@ class NormalizedDocument(BaseModel):
     text: str
     blocks: list[NormalizedBlock] = Field(default_factory=list)
     metadata: dict[str, object] = Field(default_factory=dict)
+    # 逐页证据等辅助产物（如 page-routing.jsonl）：内容由 adapter 生成，
+    # 落盘位置由 pipeline 决定，因此这里只携带「文件名 -> 文本内容」。
+    sidecars: dict[str, str] = Field(default_factory=dict)
 
 
 class DocumentAdapter(ABC):

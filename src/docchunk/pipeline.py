@@ -31,6 +31,7 @@ from docchunk.storage import (
     read_atomic_body,
     write_atomic_chunk,
     write_combined_view,
+    write_document_sidecars,
     write_manifest,
 )
 from docchunk.tokenizer import TokenCounter
@@ -179,6 +180,8 @@ def _write_normalized_document(
             handle.write(block.model_dump_json())
             handle.write("\n")
 
+    written_sidecars = write_document_sidecars(document_dir, document.sidecars)
+
     source_ref = {
         "source_path": str(document.source_path.resolve()),
         "source_sha256": source_sha256,
@@ -188,6 +191,10 @@ def _write_normalized_document(
         "normalized_path": str(normalized_path.relative_to(corpus_root)),
         "blocks_path": str(blocks_path.relative_to(corpus_root)),
         "normalized_sha256": sha256_text(document.text),
+        "sidecars": {
+            name: str((document_dir / name).relative_to(corpus_root))
+            for name in written_sidecars
+        },
         "metadata": document.metadata,
     }
 

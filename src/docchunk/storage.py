@@ -93,6 +93,30 @@ def append_index_record(paths: CorpusPaths, record: AtomicIndexRecord) -> None:
         handle.write("\n")
 
 
+def write_document_sidecars(
+    document_dir: Path,
+    sidecars: dict[str, str],
+) -> dict[str, str]:
+    """Write adapter sidecar artifacts into ``document_dir``.
+
+    Returns a mapping of sidecar name to written file name. Only plain basenames
+    are accepted so adapters can never write outside the document directory.
+    """
+    written: dict[str, str] = {}
+    for name, content in sidecars.items():
+        if (
+            not name
+            or Path(name).name != name
+            or name in {".", ".."}
+            or Path(name).is_absolute()
+        ):
+            raise ValueError(f"Invalid sidecar filename: {name}")
+        target = document_dir / name
+        target.write_text(content, encoding="utf-8")
+        written[name] = name
+    return written
+
+
 def write_manifest(paths: CorpusPaths, manifest: Manifest) -> None:
     manifest.updated_at = utc_now_iso()
     paths.manifest_json.write_text(
