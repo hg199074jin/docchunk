@@ -22,7 +22,7 @@ from docchunk.models.manifest import (
     TokenizerConfig,
 )
 from docchunk.models.state import CorpusState, ProcessingStage
-from docchunk.provenance.mineru import source_pages_for_span
+from docchunk.provenance.pages import source_pages_for_span
 from docchunk.splitting.atomic import split_atomic
 from docchunk.storage import (
     CorpusPaths,

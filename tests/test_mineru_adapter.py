@@ -6,8 +6,8 @@ from docchunk.adapters.mineru import MinerUAdapter
 from docchunk.provenance.mineru import (
     align_blocks_to_markdown,
     parse_content_list,
-    source_pages_for_span,
 )
+from docchunk.provenance.pages import source_pages_for_span
 
 
 def _fixture_blocks():
