@@ -150,3 +150,26 @@ def test_split_persists_adapter_sidecars_without_manifest_bloat(tmp_path: Path) 
     # sidecar 正文只落盘一次；manifest 里允许出现路径，不允许出现正文
     manifest_text = (corpus / "manifest.json").read_text(encoding="utf-8")
     assert '"page_idx":0' not in manifest_text
+
+
+def test_normalization_fingerprint_includes_smart_pdf_policy(tmp_path: Path) -> None:
+    from docchunk.config import resolve_mineru_command
+    from docchunk.pipeline import _normalization_fingerprint_parts
+
+    config = small_config(tmp_path)
+    parts = _normalization_fingerprint_parts(config)
+
+    assert parts["pdf_adapter"] == "page_smart_v1"
+    assert parts["pdf_inspector_version"] != "not-installed"
+    assert parts["mineru_backend"] == config.mineru_backend
+    assert parts["mineru_effort"] == config.mineru_effort
+    assert parts["mineru_command"] == resolve_mineru_command(config.mineru_command)
+
+
+def test_normalization_fingerprint_changes_with_mineru_config(tmp_path: Path) -> None:
+    from docchunk.pipeline import _normalization_fingerprint
+
+    base = small_config(tmp_path)
+    changed = base.model_copy(update={"mineru_backend": "pipeline"})
+
+    assert _normalization_fingerprint(base) != _normalization_fingerprint(changed)

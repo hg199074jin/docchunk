@@ -7,7 +7,11 @@ from docchunk.adapters.base import NormalizedBlock, NormalizedDocument
 from docchunk.adapters.directory import discover_inputs
 from docchunk.adapters.mineru import MinerUAdapter
 from docchunk.batching.builder import build_batches
-from docchunk.config import AppConfig
+from docchunk.config import (
+    PAGE_SMART_PDF_POLICY_VERSION,
+    AppConfig,
+    resolve_mineru_command,
+)
 from docchunk.errors import ExternalToolError
 from docchunk.fingerprints import sha256_file, sha256_text, stable_fingerprint
 from docchunk.inspect_input import choose_adapter
@@ -97,14 +101,20 @@ def _installed_version(package: str) -> str:
         return "not-installed"
 
 
+def _normalization_fingerprint_parts(config: AppConfig) -> dict[str, object]:
+    return {
+        "docx_adapter": "pandoc",
+        "pdf_adapter": PAGE_SMART_PDF_POLICY_VERSION,
+        "pdf_inspector_version": _installed_version("pdf-inspector"),
+        "mineru_command": resolve_mineru_command(config.mineru_command),
+        "mineru_backend": config.mineru_backend,
+        "mineru_effort": config.mineru_effort,
+        "docx_fallback_to_mineru": config.docx_fallback_to_mineru,
+    }
+
+
 def _normalization_fingerprint(config: AppConfig) -> str:
-    return stable_fingerprint(
-        {
-            "docx_adapter": "pandoc",
-            "pdf_adapter": "mineru",
-            "docx_fallback_to_mineru": config.docx_fallback_to_mineru,
-        }
-    )
+    return stable_fingerprint(_normalization_fingerprint_parts(config))
 
 
 def _atomic_policy_fingerprint(

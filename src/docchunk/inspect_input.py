@@ -3,8 +3,8 @@ from pathlib import Path
 from docchunk.adapters.base import DocumentAdapter
 from docchunk.adapters.directory import SUPPORTED_SUFFIXES, discover_inputs
 from docchunk.adapters.markdown import MarkdownAdapter
-from docchunk.adapters.mineru import MinerUAdapter
 from docchunk.adapters.pandoc import PandocAdapter
+from docchunk.adapters.pdf import SmartPdfAdapter
 from docchunk.adapters.text import TextAdapter
 from docchunk.config import AppConfig
 from docchunk.errors import UnsupportedInputError
@@ -25,10 +25,11 @@ def choose_adapter(
     if suffix == ".docx":
         return PandocAdapter()
     if suffix == ".pdf":
-        return MinerUAdapter(
-            command=mineru_command,
-            backend=mineru_backend,
-            effort=mineru_effort,
+        # v1.1：PDF 唯一入口是 SmartPdfAdapter，逐页路由 native/OCR（设计 §5）
+        return SmartPdfAdapter(
+            mineru_command=mineru_command,
+            mineru_backend=mineru_backend,
+            mineru_effort=mineru_effort,
         )
 
     raise UnsupportedInputError(f"Unsupported input type: {suffix or '<none>'}")
