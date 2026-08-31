@@ -1,6 +1,8 @@
 import shutil
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 
 from pydantic import BaseModel
 
@@ -32,6 +34,20 @@ def _check_python() -> DoctorCheck:
         detail=version,
         fix="" if ok else "Install Python 3.12 (uv python install 3.12)",
     )
+
+
+def _check_pdf_inspector() -> DoctorCheck:
+    try:
+        installed = package_version("pdf-inspector")
+        import pdf_inspector  # noqa: F401 — 只验证 import 可用
+    except (PackageNotFoundError, ImportError) as exc:
+        return DoctorCheck(
+            name="pdf-inspector",
+            ok=False,
+            detail=f"not available: {exc}",
+            fix="run: uv sync",
+        )
+    return DoctorCheck(name="pdf-inspector", ok=True, detail=installed)
 
 
 def _check_pandoc() -> DoctorCheck:
@@ -148,6 +164,7 @@ def run_doctor(config: AppConfig | None = None) -> DoctorReport:
     return DoctorReport(
         checks=[
             _check_python(),
+            _check_pdf_inspector(),
             _check_pandoc(),
             _check_mineru(config),
             _check_tiktoken(config),

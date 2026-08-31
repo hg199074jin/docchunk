@@ -38,11 +38,16 @@ def _emit_docchunk_error(err: DocchunkError, corpus_path: Path | None) -> None:
     console.print(f"[bold red]发生了什么：[/bold red] {type(err).__name__}: {err}")
 
     if isinstance(err, ExternalToolError):
-        console.print("[bold yellow]最可能原因：[/bold yellow] 系统里 MinerU / Pandoc 不可用或调用失败。")
+        console.print(
+            "[bold yellow]最可能原因：[/bold yellow] "
+            "外部解析工具或文档适配器调用失败（MinerU / Pandoc / pdf-inspector）。"
+            "如果日志显示 MinerU page failure，先运行 doctor 并核对该页。"
+        )
         console.print(
             "[bold yellow]下一步命令：[/bold yellow]\n"
-            "  1. 运行 `uv run docchunk doctor` 检查环境\n"
-            "  2. 在配置中显式设置 mineru_command 为 MinerU 可执行文件绝对路径"
+            "  1. 运行 `uv run docchunk doctor` 检查环境（含 pdf-inspector）\n"
+            "  2. 在配置中显式设置 mineru_command 为 MinerU 可执行文件绝对路径\n"
+            "  3. `uv run docchunk inspect <file>` 查看计划路由，定位问题页"
         )
     elif isinstance(err, VerificationError):
         console.print("[bold yellow]最可能原因：[/bold yellow] Corpus 被人为改动或原始资料变化。")
