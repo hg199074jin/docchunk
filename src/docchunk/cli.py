@@ -14,7 +14,7 @@ from docchunk.errors import (
     UnsupportedInputError,
     VerificationError,
 )
-from docchunk.inspect_input import analyze_input
+from docchunk.inspect_input import analyze_input, compact_page_ranges
 from docchunk.pipeline import (
     batch_corpus,
     corpus_status,
@@ -38,11 +38,16 @@ def _emit_docchunk_error(err: DocchunkError, corpus_path: Path | None) -> None:
     console.print(f"[bold red]发生了什么：[/bold red] {type(err).__name__}: {err}")
 
     if isinstance(err, ExternalToolError):
-        console.print("[bold yellow]最可能原因：[/bold yellow] 系统里 MinerU / Pandoc 不可用或调用失败。")
+        console.print(
+            "[bold yellow]最可能原因：[/bold yellow] "
+            "外部解析工具或文档适配器调用失败（MinerU / Pandoc / pdf-inspector）。"
+            "如果日志显示 MinerU page failure，先运行 doctor 并核对该页。"
+        )
         console.print(
             "[bold yellow]下一步命令：[/bold yellow]\n"
-            "  1. 运行 `uv run docchunk doctor` 检查环境\n"
-            "  2. 在配置中显式设置 mineru_command 为 MinerU 可执行文件绝对路径"
+            "  1. 运行 `uv run docchunk doctor` 检查环境（含 pdf-inspector）\n"
+            "  2. 在配置中显式设置 mineru_command 为 MinerU 可执行文件绝对路径\n"
+            "  3. `uv run docchunk inspect <file>` 查看计划路由，定位问题页"
         )
     elif isinstance(err, VerificationError):
         console.print("[bold yellow]最可能原因：[/bold yellow] Corpus 被人为改动或原始资料变化。")
@@ -259,6 +264,48 @@ def inspect(
     data = analyze_input(input_path, _config_with_root(corpus_root))
 
     for key, value in data.items():
-        if value is None:
+        if value is None or key == "pdf_files":
             continue
         console.print(f"{key}: {value}")
+
+    raw_pdf_files = data.get("pdf_files")
+    pdf_files: list[dict[str, object]] = (
+        raw_pdf_files if isinstance(raw_pdf_files, list) else []
+    )
+    if pdf_files:
+        table = Table(title="PDF Routing Preflight（pdf-inspector，未调用 MinerU）")
+        for column in ("File", "Type", "Pages", "Native", "MinerU", "OCR Pages", "Encoding"):
+            table.add_column(column)
+        for item in pdf_files:
+            raw_ocr_pages = item.get("ocr_pages")
+            ocr_display = (
+                compact_page_ranges(raw_ocr_pages)
+                if isinstance(raw_ocr_pages, list)
+                else "n/a"
+            )
+            invocation = item.get("mineru_invocation")
+            if invocation == "whole_document" and "page_count" in item:
+                mineru_display = f"{item.get('planned_mineru_pages', '?')} (whole-doc)"
+            elif "planned_mineru_pages" in item:
+                mineru_display = str(item["planned_mineru_pages"])
+            else:
+                mineru_display = "?"
+            table.add_row(
+                str(item.get("file", "?")),
+                str(item.get("pdf_type", "n/a")),
+                str(item.get("page_count", "n/a")),
+                str(item.get("planned_native_pages", "n/a")),
+                mineru_display,
+                ocr_display or "-",
+                "yes" if item.get("has_encoding_issues") else "no",
+            )
+        console.print(table)
+        fallbacks = [
+            item for item in pdf_files if item.get("full_fallback_reason")
+        ]
+        for item in fallbacks:
+            reason = item.get("full_fallback_reason")
+            console.print(
+                f"[yellow]full MinerU fallback ({reason})[/yellow] "
+                f"{item.get('file', '?')}"
+            )

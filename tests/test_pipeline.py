@@ -2,6 +2,7 @@ import json
 import unittest.mock
 from pathlib import Path
 
+from docchunk.adapters.base import NormalizedDocument
 from docchunk.config import AppConfig
 from docchunk.errors import ExternalToolError
 from docchunk.pipeline import prepare_corpus, split_corpus
@@ -112,3 +113,63 @@ def test_prepare_failure_persists_tool_error(tmp_path: Path) -> None:
     assert len(corpus_dirs) == 1
     log_text = (corpus_dirs[0] / "logs" / "processing.jsonl").read_text(encoding="utf-8")
     assert "boom-stderr-12345" in log_text
+
+
+def test_split_persists_adapter_sidecars_without_manifest_bloat(tmp_path: Path) -> None:
+    source = tmp_path / "report.md"
+    source.write_text("# 标题\n\n正文。", encoding="utf-8")
+
+    class SidecarAdapter:
+        def prepare(self, path: Path) -> NormalizedDocument:
+            return NormalizedDocument(
+                source_path=path,
+                media_type="text/markdown",
+                text="# 标题\n\n正文。",
+                metadata={"adapter": "fake"},
+                sidecars={"page-routing.jsonl": '{"page_idx":0}\n'},
+            )
+
+    with unittest.mock.patch(
+        "docchunk.pipeline.choose_adapter",
+        return_value=SidecarAdapter(),
+    ):
+        corpus = prepare_corpus(source, small_config(tmp_path / "corpora"))
+
+    sidecar = corpus / "source" / "documents" / "D0001" / "page-routing.jsonl"
+    assert sidecar.read_text(encoding="utf-8") == '{"page_idx":0}\n'
+
+    source_ref = json.loads(
+        (corpus / "source" / "documents" / "D0001" / "source-ref.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert source_ref["sidecars"] == {
+        "page-routing.jsonl": "source/documents/D0001/page-routing.jsonl"
+    }
+
+    # sidecar 正文只落盘一次；manifest 里允许出现路径，不允许出现正文
+    manifest_text = (corpus / "manifest.json").read_text(encoding="utf-8")
+    assert '"page_idx":0' not in manifest_text
+
+
+def test_normalization_fingerprint_includes_smart_pdf_policy(tmp_path: Path) -> None:
+    from docchunk.config import resolve_mineru_command
+    from docchunk.pipeline import _normalization_fingerprint_parts
+
+    config = small_config(tmp_path)
+    parts = _normalization_fingerprint_parts(config)
+
+    assert parts["pdf_adapter"] == "page_smart_v1"
+    assert parts["pdf_inspector_version"] != "not-installed"
+    assert parts["mineru_backend"] == config.mineru_backend
+    assert parts["mineru_effort"] == config.mineru_effort
+    assert parts["mineru_command"] == resolve_mineru_command(config.mineru_command)
+
+
+def test_normalization_fingerprint_changes_with_mineru_config(tmp_path: Path) -> None:
+    from docchunk.pipeline import _normalization_fingerprint
+
+    base = small_config(tmp_path)
+    changed = base.model_copy(update={"mineru_backend": "pipeline"})
+
+    assert _normalization_fingerprint(base) != _normalization_fingerprint(changed)

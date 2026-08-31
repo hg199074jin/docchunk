@@ -7,7 +7,11 @@ from docchunk.adapters.base import NormalizedBlock, NormalizedDocument
 from docchunk.adapters.directory import discover_inputs
 from docchunk.adapters.mineru import MinerUAdapter
 from docchunk.batching.builder import build_batches
-from docchunk.config import AppConfig
+from docchunk.config import (
+    PAGE_SMART_PDF_POLICY_VERSION,
+    AppConfig,
+    resolve_mineru_command,
+)
 from docchunk.errors import ExternalToolError
 from docchunk.fingerprints import sha256_file, sha256_text, stable_fingerprint
 from docchunk.inspect_input import choose_adapter
@@ -22,7 +26,7 @@ from docchunk.models.manifest import (
     TokenizerConfig,
 )
 from docchunk.models.state import CorpusState, ProcessingStage
-from docchunk.provenance.mineru import source_pages_for_span
+from docchunk.provenance.pages import source_pages_for_span
 from docchunk.splitting.atomic import split_atomic
 from docchunk.storage import (
     CorpusPaths,
@@ -31,6 +35,7 @@ from docchunk.storage import (
     read_atomic_body,
     write_atomic_chunk,
     write_combined_view,
+    write_document_sidecars,
     write_manifest,
 )
 from docchunk.tokenizer import TokenCounter
@@ -96,14 +101,20 @@ def _installed_version(package: str) -> str:
         return "not-installed"
 
 
+def _normalization_fingerprint_parts(config: AppConfig) -> dict[str, object]:
+    return {
+        "docx_adapter": "pandoc",
+        "pdf_adapter": PAGE_SMART_PDF_POLICY_VERSION,
+        "pdf_inspector_version": _installed_version("pdf-inspector"),
+        "mineru_command": resolve_mineru_command(config.mineru_command),
+        "mineru_backend": config.mineru_backend,
+        "mineru_effort": config.mineru_effort,
+        "docx_fallback_to_mineru": config.docx_fallback_to_mineru,
+    }
+
+
 def _normalization_fingerprint(config: AppConfig) -> str:
-    return stable_fingerprint(
-        {
-            "docx_adapter": "pandoc",
-            "pdf_adapter": "mineru",
-            "docx_fallback_to_mineru": config.docx_fallback_to_mineru,
-        }
-    )
+    return stable_fingerprint(_normalization_fingerprint_parts(config))
 
 
 def _atomic_policy_fingerprint(
@@ -179,6 +190,8 @@ def _write_normalized_document(
             handle.write(block.model_dump_json())
             handle.write("\n")
 
+    written_sidecars = write_document_sidecars(document_dir, document.sidecars)
+
     source_ref = {
         "source_path": str(document.source_path.resolve()),
         "source_sha256": source_sha256,
@@ -188,6 +201,10 @@ def _write_normalized_document(
         "normalized_path": str(normalized_path.relative_to(corpus_root)),
         "blocks_path": str(blocks_path.relative_to(corpus_root)),
         "normalized_sha256": sha256_text(document.text),
+        "sidecars": {
+            name: str((document_dir / name).relative_to(corpus_root))
+            for name in written_sidecars
+        },
         "metadata": document.metadata,
     }
 

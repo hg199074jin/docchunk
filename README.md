@@ -35,7 +35,7 @@ flowchart LR
 - **换模型不重做原文处理**：只需 `rebuild-batches` 调整阅读窗口，Atomic 文件保持不变。
 - **全文覆盖可验证**：`verify` 检查缺口、重复、token 计数、Batch 覆盖、来源引用以及 PDF 页码存在性。
 - **表格上下文保护**：超长表格跨片时携带表头提示，并明确标记为上下文，不污染正文。
-- **来源可追溯**：PDF 经 MinerU 解析时保留 `content_list` 页码来源；每个 Atomic 可回查原 PDF。
+- **来源可追溯**：PDF 逐页路由（v1.1），每页记录所用 parser 与原因（`page-routing.jsonl`）；每个 Atomic 可回查原 PDF 页码。
 - **整个文件夹就是一个输入**：课程、访谈集、逐字稿目录可作为 Document Set 处理，文件自然排序并保留独立来源身份。
 - **本地优先**：`docchunk` 本身不调用 LLM API，也不会主动上传文档。
 
@@ -70,7 +70,7 @@ flowchart LR
 | --- | --- | --- |
 | `.txt` / `.md` | 直接标准化 | 无需额外解析器 |
 | `.docx` | Pandoc → GFM Markdown | 可显式配置 MinerU fallback |
-| `.pdf` | MinerU | 保留页码溯源信息 |
+| `.pdf` | SmartPdfAdapter：pdf-inspector 逐页路由，native 页直接读、OCR 页走 MinerU | 逐页审计证据 `page-routing.jsonl` |
 | 文件夹 | Document Set | 自然排序，独立 document_id，不粗暴拼接来源 |
 
 ## 安装
@@ -89,7 +89,7 @@ uv run docchunk doctor
 - **Pandoc**：处理 DOCX，例如 macOS：`brew install pandoc`
 - **MinerU**：处理 PDF，参见 [MinerU 官方仓库](https://github.com/opendatalab/MinerU)
 
-`doctor` 会检查 Python、Pandoc、MinerU、tiktoken 词表和 Corpus 根目录，并显示实际解析到的外部工具路径。
+`doctor` 会检查 Python、pdf-inspector、Pandoc、MinerU、tiktoken 词表和 Corpus 根目录，并显示实际解析到的外部工具路径。
 
 ## 快速上手
 
@@ -115,14 +115,30 @@ uv run docchunk verify "/实际输出的Corpus路径"
 
 成功时 `verify` 返回 PASS 语义并退出 0。
 
-### 2. 处理 PDF
+### 2. 处理 PDF（Smart PDF Routing，v1.1）
 
 ```bash
 uv run docchunk doctor
+uv run docchunk inspect "$HOME/Documents/audit-report.pdf"
 uv run docchunk split "$HOME/Documents/book.pdf"
 ```
 
-PDF 默认走 MinerU。本地默认参数为 `-b hybrid-engine --effort medium`；解析后的 Markdown 与 `content_list` 页码来源会进入 Corpus。
+PDF 的唯一入口是 `SmartPdfAdapter`，逐页选择最可靠的解析器（v1.1 新增）：
+
+```text
+Native PDF page（可可靠直接读取）→ pdf-inspector 原生提取（不 OCR）
+OCR-required PDF page（扫描/无法可靠读取）→ MinerU 单页解析（--start N --end N）
+Mixed PDF → 按原始页码重新合并，页码 provenance 全程保留
+纯扫描 PDF（所有页都需 OCR）→ 整份一次 MinerU 调用（方案 A）
+pdf-inspector 自带 OCR → 不使用
+confidence → 只记录诊断，绝不参与路由阈值
+```
+
+典型例子：100 页审计报告，1–3 页签章扫描、4–100 页原生电子文字 → 1–3 页走 MinerU OCR，4–100 页直接读原生文字，页码 1–100 连续可追溯。
+
+`inspect` 会预演路由（不调用 MinerU）：显示哪些页走 native、哪些页走 OCR（OCR 页压缩为 `1-3` 这样的范围）以及 `route policy: page_smart_v1`。
+
+每个 PDF Document 额外产出逐页审计证据 `source/documents/D0001/page-routing.jsonl`（每页恰好一行：该页用了哪个 parser、原因、页码）。MinerU 单页解析的页码由 DocChunk 强制回写为原 PDF 页码，绝不信任外部工具自己的页号。原始 PDF 永远只读。本地 MinerU 默认参数为 `-b hybrid-engine --effort medium`。
 
 ### 3. 处理 Word
 
@@ -157,7 +173,7 @@ uv run docchunk split "$HOME/Documents/课程"
 ├── index.jsonl          # Atomic 索引：token、字符区间、标题路径、页码
 ├── state.json           # 处理状态机
 ├── combined.md          # 派生阅读视图
-├── source/              # normalized 原文、blocks、source-ref
+├── source/              # normalized 原文、blocks、source-ref（PDF 另有 page-routing.jsonl）
 ├── atomic/Axxxxxx.md    # 稳定的最小阅读单元
 └── batches/Bxxxx.md     # Agent 实际读取的窗口
 ```
@@ -260,7 +276,7 @@ Router 不修改第三方 Skill，只在上游负责长文档读取编排。
 
 ## 项目状态
 
-当前版本：**v1.0.3**。
+当前版本：**v1.1.0**（Page-Level Smart PDF Routing）。
 
 下一阶段重点不是堆更多“智能”，而是继续提高可安装性、可观测性和生态集成：
 
