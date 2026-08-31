@@ -84,7 +84,9 @@ def test_inspector_normalizes_page_results_to_zero_based(tmp_path: Path) -> None
     assert bundle.pages[2].page_idx == 2
 
 
-def test_inspector_forces_needs_ocr_on_detect_localized_pages(tmp_path: Path) -> None:
+def test_inspector_records_detect_reasons_without_flipping_needs_ocr(
+    tmp_path: Path,
+) -> None:
     pdf = tmp_path / "report.pdf"
     pdf.write_bytes(b"%PDF-fake")
 
@@ -95,8 +97,8 @@ def test_inspector_forces_needs_ocr_on_detect_localized_pages(tmp_path: Path) ->
             _page(1, "第二页", False, None),
         ],
     )
-    # detect 定位第 2 页（1-based）存在异常：设计 §12 保守路由要求该页进 MinerU，
-    # 即使提取期自认 needs_ocr=False；提取结果仍是正文来源的唯一候选
+    # 实测（2026-08-31）：detect 可能把可读文字页也误标为需 OCR。
+    # 提取期 needs_ocr 是唯一路由权威，detect 信息只作诊断记录。
     detected.ocr_reasons_by_page = [SimpleNamespace(page=2, reasons=["empty_page"])]
     detected.pages_needing_ocr = [2]
     extracted.ocr_reasons_by_page = [SimpleNamespace(page=2, reasons=["empty_page"])]
@@ -107,7 +109,7 @@ def test_inspector_forces_needs_ocr_on_detect_localized_pages(tmp_path: Path) ->
         bundle = PdfInspectorAdapter().inspect_and_extract(pdf)
 
     assert bundle.pages[0].needs_ocr is False
-    assert bundle.pages[1].needs_ocr is True
+    assert bundle.pages[1].needs_ocr is False
     assert bundle.pages[1].ocr_reasons == ["empty_page"]
 
 

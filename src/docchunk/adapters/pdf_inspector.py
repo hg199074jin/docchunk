@@ -7,9 +7,11 @@ Conventions verified against pdf-inspector 1.17.0:
   shifted here — never in business code;
 - ``PagesExtractionResult`` carries no ``page_count``; inventory validation
   therefore uses ``detect_pdf().page_count``;
-- extraction-time ``needs_ocr`` is authoritative, but pages explicitly listed
-  by detection (encoding-issue localization, design §12) are forced to
-  ``needs_ocr`` for conservative routing.
+- extraction-time ``needs_ocr`` is the SOLE per-page routing authority.
+  Detection-side per-page flags are recorded as diagnostics only: real-world
+  evidence (2026-08-31) shows detection can flag perfectly readable text
+  pages as needing OCR, and routing on those flags would send good native
+  text through OCR against the core principle (design §2/§10).
 
 This module never calls MinerU and never uses pdf-inspector OCR features.
 """
@@ -43,7 +45,7 @@ class PdfInspectorAdapter:
         except Exception:  # noqa: BLE001 — 外部库边界：失败形态不可枚举，逐页隔离重试兜底
             pages = self._extract_pages_individually(path, summary.page_count)
         self._validate_inventory(summary.page_count, pages)
-        pages = self._apply_detected_ocr_flags(detected, pages)
+        pages = self._apply_detected_ocr_reasons(detected, pages)
         return PdfInspectorBundle(summary=summary, pages=pages)
 
     def _build_summary(self, detected: Any) -> PdfInspectionSummary:
@@ -114,11 +116,16 @@ class PdfInspectorAdapter:
                 f"extraction returned {len(pages)}"
             )
 
-    def _apply_detected_ocr_flags(
+    def _apply_detected_ocr_reasons(
         self,
         detected: Any,
         pages: list[NativePageResult],
     ) -> list[NativePageResult]:
+        """Merge detection-side reasons as diagnostics; never flip ``needs_ocr``.
+
+        提取期 ``needs_ocr`` 是唯一路由权威：实测（2026-08-31）detect 会把
+        完全可读的文字页误标为需 OCR，依据 detect 强制路由会违反 §2 核心原则。
+        """
         # detect 级页码是 1-based：在此统一 −1，业务代码不出现裸转换
         localized: dict[int, list[str]] = {}
         for entry in getattr(detected, "ocr_reasons_by_page", []) or []:
@@ -128,11 +135,11 @@ class PdfInspectorAdapter:
             localized.setdefault(page_number_to_index(page_number), []).extend(
                 entry.reasons
             )
-        flagged = {
-            page_number_to_index(int(page))
-            for page in getattr(detected, "pages_needing_ocr", []) or []
-            if int(page) >= 1
-        }
+        for page_number in getattr(detected, "pages_needing_ocr", []) or []:
+            number = int(page_number)
+            if number < 1:
+                continue
+            localized.setdefault(page_number_to_index(number), [])
 
         updated: list[NativePageResult] = []
         for page in pages:
@@ -140,12 +147,9 @@ class PdfInspectorAdapter:
             for reason in localized.get(page.page_idx, []):
                 if reason and reason not in reasons:
                     reasons.append(reason)
-            needs_ocr = page.needs_ocr or page.page_idx in flagged
-            changed = reasons != page.ocr_reasons or needs_ocr != page.needs_ocr
+            changed = reasons != page.ocr_reasons
             updated.append(
-                page.model_copy(update={"ocr_reasons": reasons, "needs_ocr": needs_ocr})
-                if changed
-                else page
+                page.model_copy(update={"ocr_reasons": reasons}) if changed else page
             )
         return updated
 
