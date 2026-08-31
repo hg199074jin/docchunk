@@ -149,7 +149,7 @@ wheels = [
 
 [[package]]
 name = "docchunk"
-version = "1.0.3"
+version = "1.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "pdf-inspector" },

@@ -69,21 +69,37 @@ uv run docchunk split "$HOME/Documents/report.docx"
 
 默认走 Pandoc 转 GFM Markdown。Pandoc 失败会显式报错；只有显式开启 `docx_fallback_to_mineru` 才会降级，且降级会被记录在 Manifest 中。
 
-## PDF 示例（MinerU）
+## PDF 示例（Smart PDF Routing，v1.1）
 
-先确认环境（`docchunk` 会自动解析 MinerU 路径，`doctor` 可查看解析结果）：
+PDF 的唯一入口是 `SmartPdfAdapter`，逐页选择最可靠的解析器（v1.1 新增）：
 
-```bash
-uv run docchunk doctor
+```text
+Native PDF page（可可靠直接读取）→ pdf-inspector 原生提取（不 OCR）
+OCR-required PDF page（扫描/无法可靠读取）→ MinerU 单页解析（--start N --end N）
+Mixed PDF → 按原始页码重新合并，页码 provenance 全程保留
+纯扫描 PDF（所有页都需 OCR）→ 整份一次 MinerU 调用（方案 A，避免逐页重复加载模型）
+pdf-inspector 自带 OCR → 不使用
+confidence → 只记录诊断，绝不参与路由阈值
 ```
 
-再运行：
+典型例子：100 页审计报告，1–3 页签章扫描、4–100 页原生电子文字 →
+1–3 页走 MinerU OCR，4–100 页直接读原生文字，页码 1–100 连续可追溯。
+
+split 之前先用 `inspect` 预演路由（不调用 MinerU）：
+
+```bash
+uv run docchunk inspect "$HOME/Documents/audit-report.pdf"
+```
+
+会显示计划路由表（哪些页走 native、哪些页走 OCR、OCR 页压缩为 `1-3` 这样的范围），以及 `route policy: page_smart_v1`。
+
+正式切分：
 
 ```bash
 uv run docchunk split "$HOME/Documents/book.pdf"
 ```
 
-PDF 默认走 MinerU（本机默认 `-b hybrid-engine --effort medium`），产出 Markdown 的同时保留 `content_list` 页码溯源——每个 Atomic 都能回查到原 PDF 页码。
+每个 PDF Document 会额外产出逐页审计证据 `source/documents/D0001/page-routing.jsonl`（每页恰好一行，记录该页用了哪个 parser、原因、页码）。MinerU 单页解析的页码由 DocChunk 强制回写为原 PDF 页码，绝不信任外部工具自己的页号。原始 PDF 永远只读。
 
 ## 整个课程文件夹示例
 
@@ -108,7 +124,7 @@ uv run docchunk split "$HOME/Documents/课程"
 ├── index.jsonl          # Atomic 权威索引（token 数/字符区间/标题路径/页码）
 ├── state.json           # 处理状态机
 ├── combined.md          # 派生阅读视图
-├── source/              # normalized 原文 + blocks + source-ref
+├── source/              # normalized 原文 + blocks + source-ref（PDF 另有 page-routing.jsonl）
 ├── atomic/Axxxxxx.md    # 最小阅读单元（frontmatter + 原样正文）
 └── batches/Bxxxx.md     # 模型实际阅读的窗口（含 Context Bridge 标记）
 ```
