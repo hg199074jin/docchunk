@@ -14,7 +14,7 @@ from docchunk.errors import (
     UnsupportedInputError,
     VerificationError,
 )
-from docchunk.inspect_input import analyze_input
+from docchunk.inspect_input import analyze_input, compact_page_ranges
 from docchunk.pipeline import (
     batch_corpus,
     corpus_status,
@@ -259,6 +259,48 @@ def inspect(
     data = analyze_input(input_path, _config_with_root(corpus_root))
 
     for key, value in data.items():
-        if value is None:
+        if value is None or key == "pdf_files":
             continue
         console.print(f"{key}: {value}")
+
+    raw_pdf_files = data.get("pdf_files")
+    pdf_files: list[dict[str, object]] = (
+        raw_pdf_files if isinstance(raw_pdf_files, list) else []
+    )
+    if pdf_files:
+        table = Table(title="PDF Routing Preflight（pdf-inspector，未调用 MinerU）")
+        for column in ("File", "Type", "Pages", "Native", "MinerU", "OCR Pages", "Encoding"):
+            table.add_column(column)
+        for item in pdf_files:
+            raw_ocr_pages = item.get("ocr_pages")
+            ocr_display = (
+                compact_page_ranges(raw_ocr_pages)
+                if isinstance(raw_ocr_pages, list)
+                else "n/a"
+            )
+            invocation = item.get("mineru_invocation")
+            if invocation == "whole_document" and "page_count" in item:
+                mineru_display = f"{item.get('planned_mineru_pages', '?')} (whole-doc)"
+            elif "planned_mineru_pages" in item:
+                mineru_display = str(item["planned_mineru_pages"])
+            else:
+                mineru_display = "?"
+            table.add_row(
+                str(item.get("file", "?")),
+                str(item.get("pdf_type", "n/a")),
+                str(item.get("page_count", "n/a")),
+                str(item.get("planned_native_pages", "n/a")),
+                mineru_display,
+                ocr_display or "-",
+                "yes" if item.get("has_encoding_issues") else "no",
+            )
+        console.print(table)
+        fallbacks = [
+            item for item in pdf_files if item.get("full_fallback_reason")
+        ]
+        for item in fallbacks:
+            reason = item.get("full_fallback_reason")
+            console.print(
+                f"[yellow]full MinerU fallback ({reason})[/yellow] "
+                f"{item.get('file', '?')}"
+            )
